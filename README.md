@@ -4,7 +4,7 @@
 pg_background_mgr — Colección de funciones para lanzar, monitorear y controlar procesos en segundo plano dentro de PostgreSQL. El sistema administra múltiples tareas con control de concurrencia, cola dinámica y herramientas de seguimiento en tiempo real.  utiliza la extensión pg_background.
 
 Incluye:
-- `pg_background_launch_num`: Lanza procesos con límite configurable y cola automática.
+- `pg_background_multilaunch`: Lanza multiples procesos y cola automática.
 - `pg_background_monitor`: Consulta el estado de los procesos en ejecución o completados.
 - `pg_background_stop`: Finaliza procesos en segundo plano de forma controlada.
 
@@ -36,7 +36,7 @@ CREATE EXTENSION pg_background;
 **/
 
 --- Te retorna una tabla con los pid de los procesos,status, lo que se ejecuto y fecha_inicio y fecha_fin cuendo se ejecuto y cuanto tiempo tiene , esta tabla se va actualizando, este va monitoreando los procesos y actualizando la tabla y una vez que terminen todos los proceos de ejecutarse se finaliza.  ESTE TAMBIEN VALIDA CUANDO UNO YA TERMINO DE EJECUTARSE PARA EJECUTAR PROCESOS EN COLA QUE NO SE PUDIERON EJECUTAR POR MOTIVO DE MAXIMO PROCESOS EN EJECUCION. SI NO DEFINES NINGUN PARAMETRO TE MOSTRARA LA TABLA 
--- STATUS : 'running' , 'sleep', 'stop' , 
+-- STATUS : 'running' , 'sleep', 'stop', 'wait' , 
 pg_background_monitor(uuid_father TEXT, p_show_verbose BOOLEAN true )
 
 
@@ -51,8 +51,8 @@ pg_background_stop(uuid_father_or_child TEXT)
 
 
 
--- DROP FUNCTION pg_background_launch_num(TEXT,TEXT,BOOLEAN);
-CREATE OR REPLACE FUNCTION pg_background_launch_num(
+-- DROP FUNCTION pg_background_multilaunch(TEXT,TEXT,BOOLEAN);
+CREATE OR REPLACE FUNCTION pg_background_multilaunch(
                           p_querys TEXT,
 						  p_delimiter TEXT DEFAULT ',',
 						  p_monitor BOOLEAN DEFAULT TRUE
@@ -110,7 +110,7 @@ SET statement_timeout = 0
 SET lock_timeout = 0 ;
 
  
- select * from pg_background_launch_num('select version();,select version(),select version(),select version(),select version(),select version(),select version();  ');
+ select * from pg_background_multilaunch('select version();,select version(),select version(),select version(),select version(),select version(),select version();  ');
  
 
 
