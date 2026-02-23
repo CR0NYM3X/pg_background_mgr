@@ -6,12 +6,44 @@ Para lograr que los 50 procesos se abran y esperen antes de actuar, necesitamos 
 
 ### 1. La Tabla de Control (El Semáforo)
 
-Necesitamos una tabla que actúe como el estado de salud de la operación.
+Necesitamos una tabla P que actúe como el estado de salud de la operación.
 
 * **ID_Lote:** Identificador único del grupo de 50 procesos.
 * **PID:** El process ID asignado.
 * **Estado:** ('INICIALIZANDO', 'LISTO', 'EJECUTANDO', 'COMPLETADO').
 * **Total_Esperado:** 50.
+* **un uuid padre**
+* date_insert
+* date_update
+* id_proces -- esto ya que se asignara una query a cada proceso
+
+------- otra tabla que dira la cantidad de procesos a ejecutar y el uuid de proceso padre , este se usara para registrarlo en la tabla P donde  
+
+1.- Tu usaras una funcion que le colocaras la cantidad de proceso que quieres y este te retornara un UUID el cual sera el que se usara para pasarselo a los procesos hijos  primero valida si el servidor permite registrar la cantidad de procesos en caso de que no retornara un error , esta informacion se registrara en una tabla:
+ backgroup_inventary
+  id
+  uuid
+  cnt_total_bck
+  cnt_used
+
+
+ 2.- Se usara otra funcion el cual se indicara la query que quieres ejecutar y en que grupo de procesos quieres que se ejecute, cada vez que agregues una se registrara en una tabla y te dira cuantos procesos quedan libres esto lo validara en la tabla de backgroup_inventary con ayuda del uuid , en caso de que no haya mas procesos libres marcara un error y no te dejara agregarlos tabla:
+
+ id
+ uuid_padre
+ PID defaul 0
+ status ('INICIALIZANDO', 'LISTO', 'EJECUTANDO', 'COMPLETADO').
+ query_exec
+ date_update
+ date_insert
+
+ 
+ funcion de inicio
+ 
+
+
+* Tengo que crear una funcion X que ejecutara cada proceso, esa funcion entra en un bucle y estara validando su pid si ya esta listo para ejecutarse y ejecutara la query que se le indico.
+* 
 
 ### 2. Flujo de Trabajo Propuesto
 
