@@ -1,7 +1,11 @@
 # .........EN PROCESO DE DESARROLLO DE FUNCIONES.........
 
 # pg_background_mgr
-pg_background_mgr — Colección de funciones para lanzar, monitorear y controlar procesos en segundo plano dentro de PostgreSQL. El sistema administra múltiples tareas con control de concurrencia, cola dinámica y herramientas de seguimiento en tiempo real.  utiliza la extensión pg_background.
+pg_background_mgr —  Colección de funciones para lanzar, monitorear y controlar procesos en segundo plano dentro de PostgreSQL. El sistema administra múltiples tareas con control de concurrencia, cola dinámica y herramientas de seguimiento en tiempo real.  utiliza la extensión pg_background.
+
+Beneficio: Te permitira ejecutar de forma paralela y no de forma escalonada , esto permite controlar cualquier error que se pueda presentar ya que hay escenarios donde uno puede mandar ejecutar 50 procesos y resulto que solo se ejecutaron 30 y faltaron 20 y esos hay 
+que ejecutarlos de manera manual y aveces uno ni cuenta se da cuenta si no hasta que ve inconsistencia de los datos, entonces esta nueva forma fuerza a que se abran los 50 procesos y si no se abren entonces se cancela de lo contrario entonces ya que se detecta que estan los 50 proceos se les indica a los proceso que continuen , esto gracias a una tabla donde se registran los id de los procesos, esto permitira trabajar de manera sincrona.
+esto sirve en los escenarios donde si un proceso falta puedes obtener resultados incorrectos,
 
 Incluye:
 - `pg_background_multilaunch`: Lanza multiples procesos y cola automática.
