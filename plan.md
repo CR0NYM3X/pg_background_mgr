@@ -2,13 +2,12 @@
 
 ## El Concepto: "The Barrier Pattern" (Patrón de Barrera)
 
-Para lograr que los 50 procesos se abran y esperen antes de actuar, necesitamos cambiar la lógica de "lanza y corre" por una de **"registra, espera y dispara"**.
-
-### 1. La Tabla de Control (El Semáforo)
-
-Necesitamos una tabla P que actúe como el estado de salud de la operación.
 
  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+pg_background_multilaunch: Lanza multiples procesos y cola automática.
+pg_background_monitor: Consulta el estado de los procesos en ejecución o completados.
+pg_background_stop: Finaliza procesos en segundo plano de forma controlada.
 
 ------- otra tabla que dira la cantidad de procesos a ejecutar y el uuid de proceso padre , este se usara para registrarlo en la tabla P donde  
 
@@ -34,7 +33,8 @@ Necesitamos una tabla P que actúe como el estado de salud de la operación.
  
 [NOTA] cada proceso se ejecutara una funcion la cual estara constantemente consultando su pid para ver si ya esta en la face de ejecutar 
 [NOTA] - Tambien abra un tipo de cola el cual si superas el limite de procesos terminados los backgroud se reciclan esto permite ejecutar varios no en paralelo 
- 
+[NOTA] agregar intentos fallidos y exitosos a los backgroud y Agregarle barra de progreso en caso de que se ejecute por psql
+
 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
