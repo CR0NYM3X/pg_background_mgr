@@ -8,14 +8,7 @@ Para lograr que los 50 procesos se abran y esperen antes de actuar, necesitamos 
 
 Necesitamos una tabla P que actúe como el estado de salud de la operación.
 
-* **ID_Lote:** Identificador único del grupo de 50 procesos.
-* **PID:** El process ID asignado.
-* **Estado:** ('INICIALIZANDO', 'LISTO', 'EJECUTANDO', 'COMPLETADO').
-* **Total_Esperado:** 50.
-* **un uuid padre**
-* date_insert
-* date_update
-* id_proces -- esto ya que se asignara una query a cada proceso
+ --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 ------- otra tabla que dira la cantidad de procesos a ejecutar y el uuid de proceso padre , este se usara para registrarlo en la tabla P donde  
 
@@ -27,20 +20,23 @@ Necesitamos una tabla P que actúe como el estado de salud de la operación.
   cnt_used
 
 
- 2.- Se usara otra funcion el cual se indicara la query que quieres ejecutar y en que grupo de procesos quieres que se ejecute, cada vez que agregues una se registrara en una tabla y te dira cuantos procesos quedan libres esto lo validara en la tabla de backgroup_inventary con ayuda del uuid , en caso de que no haya mas procesos libres marcara un error y no te dejara agregarlos tabla:
+ 2.- Se usara otra funcion el cual se indicara la query que quieres ejecutar y en que grupo de procesos quieres que se ejecute, cada vez que agregues una se registrara en una tabla y te dira cuantos procesos quedan libres esto lo validara en la tabla de backgroup_inventary con ayuda del uuid y tambien retornara true si se registra con exito , aparte validara si existe el uuid padre, en caso de que no haya mas procesos libres marcara un error y no te dejara agregarlos tabla background_process:
 
  id
  uuid_padre
  PID defaul 0
- status ('INICIALIZANDO', 'LISTO', 'EJECUTANDO', 'COMPLETADO').
+ status ('INICIALIZANDO', ejecutar, 'LISTO', 'EJECUTANDO', 'COMPLETADO').
  query_exec
  date_update
  date_insert
 
+ 3.- Fase de inciar procesos, ejecutaras una funcion que iniciara todos los procesos que deben iniciar y se lanzaran rapidamente pero todavia no se ejecutara, le puedes indicar con parametro force_cnt_proceess y true que a fuerzas tiene que estar la cantidad de procesos en la tabla backgroup_inventary o si no pues que se cancela la ejecucion , pero nunca se deben abrir menos de los que estan registrados en la tabla background_process por ejemplo tu inciaste el grupo con 50 pero solo registraste 10 , entonces no se pueden ejecutar nunca menos de 10 de lo contrario se cancelara esto solo si indicas false el force_cnt_proceess, en cada proceso se le indicara su UUID y cada uno agarrara un id no importa como lo agarre  . 
  
- funcion de inicio
+[NOTA] cada proceso se ejecutara una funcion la cual estara constantemente consultando su pid para ver si ya esta en la face de ejecutar 
+[NOTA] - Tambien abra un tipo de cola el cual si superas el limite de procesos terminados los backgroud se reciclan esto permite ejecutar varios no en paralelo 
  
 
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 * Tengo que crear una funcion X que ejecutara cada proceso, esa funcion entra en un bucle y estara validando su pid si ya esta listo para ejecutarse y ejecutara la query que se le indico.
 * 
