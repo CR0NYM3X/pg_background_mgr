@@ -17,6 +17,17 @@ El sistema se basará en un modelo de **Orquestador-Worker**.
 
 ### Diagrama de Flujo Lógico
 
+
+\c postgres
+drop database test;
+create database test;
+\c test 
+create extension pg_background;
+
+
+
+
+	
 */
  
 
