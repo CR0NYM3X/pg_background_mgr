@@ -385,12 +385,28 @@ BEGIN
             WHERE id = v_process_id;
             
             RETURN false;
+         
     END;
 
     RETURN true;
 END;
 $func$;
 
+
+/* agregar la parte de cancelado
+
+EXCEPTION 
+
+	WHEN QUERY_CANCELED  THEN
+		     -- Registro de falla con detalle
+            UPDATE bck.background_process 
+            SET status = 'FALLIDO',
+                end_time = clock_timestamp(),
+                failed_attempts = failed_attempts + 1,
+                error_msg = format('ERROR: uuid_child: %s - %s | CTX: %s',p_child_uuid, v_msg_error, v_context)
+            WHERE id = v_process_id; 
+
+*/
 
 -- Revocar público
 REVOKE ALL ON FUNCTION bck.run_task(uuid, text) FROM PUBLIC;
