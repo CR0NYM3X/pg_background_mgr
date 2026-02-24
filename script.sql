@@ -151,28 +151,35 @@ FROM cte_metricas;
 -- 3. Función 1: Inicialización de Inventario
 
 -- Esta función valida el "cupo" y reserva el slot de procesos.
- 
- 
 CREATE OR REPLACE FUNCTION bck.fn_crear_inventario(p_cantidad integer)
 RETURNS uuid
 LANGUAGE plpgsql
 AS $func$
 DECLARE
-    v_uuid        uuid    := gen_random_uuid();
-    v_max_allowed integer := 1000; -- Ajustado para alta carga de procesos
+    v_uuid          uuid    := gen_random_uuid();
+    v_max_system    integer; -- Capacidad total del servidor
+    v_max_safe      integer; -- Capacidad permitida (max - 2)
 BEGIN
-    -- 1. Validación de parámetros de entrada
+    -- 1. Obtener límites dinámicos del servidor
+    v_max_system := current_setting('max_worker_processes')::integer;
+    v_max_safe   := v_max_system - 2;
+
+    -- Garantizar que v_max_safe no sea negativo en servidores muy pequeños
+    IF v_max_safe < 1 THEN v_max_safe := 1; END IF;
+
+    -- 2. Validación de parámetros de entrada
     IF p_cantidad IS NULL OR p_cantidad <= 0 THEN
         RAISE EXCEPTION 'La cantidad de procesos debe ser mayor a 0.';
-    ELSIF p_cantidad > v_max_allowed THEN
-        RAISE EXCEPTION 'Cantidad de procesos (%) excede el límite corporativo permitido (%)', p_cantidad, v_max_allowed;
+    ELSIF p_cantidad > v_max_safe THEN
+        RAISE EXCEPTION 'Capacidad insuficiente: Solicitado %, Máximo seguro permitido % Ajuste (max_worker_processes: %)', 
+            p_cantidad, v_max_safe, v_max_system;
     END IF;
 
-    -- 2. Registro en tabla de control interna
+    -- 3. Registro en tabla de control interna
     INSERT INTO bck.background_inventory (
         uuid_parent, 
         cnt_total_bck, 
-        cnt_used_bck,
+        cnt_used, -- Ajustado al nombre de columna estándar
         date_insert
     )
     VALUES (
@@ -188,11 +195,9 @@ EXCEPTION
     WHEN unique_violation THEN
         RAISE EXCEPTION 'Error crítico: Colisión de UUID detectada. Reintente la operación.';
     WHEN OTHERS THEN
-        -- Reportamos el error directamente al cliente/app sin insertar en tablas externas
         RAISE EXCEPTION 'Error al crear inventario: % (SQLSTATE: %)', SQLERRM, SQLSTATE;
 END;
 $func$;
-
 
 
 select * from bck.fn_crear_inventario(4);
@@ -216,7 +221,7 @@ select * from bck.background_inventory where uuid_parent = '453d77bc-6e4b-42e0-9
  
 
 ---------------- EXAMPLE USAGE ----------------
- 
+--- Que se agreguen en modo de array las querys  
 
 CREATE OR REPLACE FUNCTION bck.fn_registrar_proceso(
     p_uuid_parent uuid,
@@ -459,9 +464,10 @@ select id,pid,status,query_exec, attempts,failed_attempts ,max_attempts , date_u
 
 ----------- ## 5. Orquestador 
 
--- El orquestador tendra la habilidad de lanzar los procesos de forma asincrona o sincrona dependiendo como lo solicitens por paramtro sync  o async  (default)
-
-
+	
+--  paralello, random (Random) o secuencial
+-- forzar la ejecucion de un uuid_child aunque este completo 
+	
 CREATE OR REPLACE FUNCTION bck.fn_lanzar_orquestador(
     p_uuid_parent uuid,
     p_force_cnt   boolean DEFAULT false -- p_force_cnt
