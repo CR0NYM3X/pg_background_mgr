@@ -10,6 +10,8 @@ pg_background_monitor: Consulta el estado de los procesos en ejecución o comple
 pg_background_stop: Finaliza procesos en segundo plano de forma controlada.
 
 ------- otra tabla que dira la cantidad de procesos a ejecutar y el uuid de proceso padre , este se usara para registrarlo en la tabla P donde  
+Este solo permite ejecutar funciones no permite retornar nada!!!
+
 
 1.- Tu usaras una funcion que le colocaras la cantidad de proceso que quieres y este te retornara un UUID el cual sera el que se usara para pasarselo a los procesos hijos  primero valida si el servidor permite registrar la cantidad de procesos en caso de que no retornara un error , esta informacion se registrara en una tabla:
  backgroup_inventary
@@ -30,7 +32,8 @@ pg_background_stop: Finaliza procesos en segundo plano de forma controlada.
  date_insert
 
  3.- Fase de inciar procesos, ejecutaras una funcion que iniciara todos los procesos que deben iniciar y se lanzaran rapidamente pero todavia no se ejecutara, le puedes indicar con parametro force_cnt_proceess y true que a fuerzas tiene que estar la cantidad de procesos en la tabla backgroup_inventary o si no pues que se cancela la ejecucion , pero nunca se deben abrir menos de los que estan registrados en la tabla background_process por ejemplo tu inciaste el grupo con 50 pero solo registraste 10 , entonces no se pueden ejecutar nunca menos de 10 de lo contrario se cancelara esto solo si indicas false el force_cnt_proceess, en cada proceso se le indicara su UUID y cada uno agarrara un id no importa como lo agarre  . 
- 
+
+
 [NOTA] cada proceso se ejecutara una funcion la cual estara constantemente consultando su pid para ver si ya esta en la face de ejecutar 
 [NOTA] - Tambien abra un tipo de cola el cual si superas el limite de procesos terminados los backgroud se reciclan esto permite ejecutar varios no en paralelo 
 [NOTA] agregar intentos fallidos y exitosos a los backgroud y Agregarle barra de progreso en caso de que se ejecute por psql
