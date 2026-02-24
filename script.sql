@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS bck.background_inventory (
 CREATE TABLE IF NOT EXISTS bck.background_process (
     id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     uuid_parent     uuid NOT NULL REFERENCES bck.background_inventory(uuid_parent) ON DELETE CASCADE,
+    uuid_child     uuid DEFAULT gen_random_uuid() UNIQUE,
     pid             integer DEFAULT 0,
     status          text DEFAULT 'LISTO' 
                     CHECK (status IN ('LISTO', 'INICIALIZANDO', 'EJECUTANDO', 'COMPLETADO', 'FALLIDO')),
@@ -278,25 +279,21 @@ SELECT bck.fn_registrar_proceso( '453d77bc-6e4b-42e0-911f-7a3016470b0b', 'select
 
 select * from bck.background_inventory where uuid_parent = '453d77bc-6e4b-42e0-911f-7a3016470b0b';
 
-select id,pid,status,query_exec, attempts,failed_attempts ,max_attempts , date_update from bck.background_process;
-+----+-----+--------+---------------------+----------+-----------------+--------------+-------------------------------+
-| id | pid | status |     query_exec      | attempts | failed_attempts | max_attempts |          date_update          |
-+----+-----+--------+---------------------+----------+-----------------+--------------+-------------------------------+
-|  1 |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 18:36:15.137194-07 |
-|  2 |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 18:36:16.448826-07 |
-|  3 |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 18:36:16.848922-07 |
-|  4 |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 18:36:17.265136-07 |
-+----+-----+--------+---------------------+----------+-----------------+--------------+-------------------------------+
+select id,uuid_child,pid,status,query_exec, attempts,failed_attempts ,max_attempts , date_update from bck.background_process;
++----+--------------------------------------+-----+--------+---------------------+----------+-----------------+--------------+-------------------------------+
+| id |              uuid_child              | pid | status |     query_exec      | attempts | failed_attempts | max_attempts |          date_update          |
++----+--------------------------------------+-----+--------+---------------------+----------+-----------------+--------------+-------------------------------+
+|  1 | fcf47a12-a702-4a8f-826e-4292b99f97e8 |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 19:04:20.916348-07 |
+|  2 | 67b48371-bc6e-4d5e-a3d8-244697d6830d |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 19:04:21.524719-07 |
+|  3 | c1dc6e9d-1a98-4a0f-9eaf-ae24c5c2375a |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 19:04:21.972099-07 |
+|  4 | 367e65cb-835c-4b23-b681-2223847e2749 |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 19:04:22.483572-07 |
++----+--------------------------------------+-----+--------+---------------------+----------+-----------------+--------------+-------------------------------+
 (4 rows)
 
 
 
 
-
-
-
-
-
+ 
 
 ---------------------------------------------- EJECUTOR ----------------------------------------------
 
@@ -306,8 +303,7 @@ select id,pid,status,query_exec, attempts,failed_attempts ,max_attempts , date_u
 -- SELECT bck.run_task('550e8400-e29b-41d4-a716-446655440000', pg_backend_pid());
 
 CREATE OR REPLACE FUNCTION bck.run_task(
-    p_parent_uuid uuid,
-    p_pid         integer
+    p_child_uuid uuid
 )
 RETURNS boolean
 LANGUAGE plpgsql
@@ -321,7 +317,7 @@ DECLARE
     v_context     text;
 BEGIN
     -- 1. Validación de parámetros de entrada
-    IF p_parent_uuid IS NULL OR p_pid IS NULL THEN
+    IF p_child_uuid IS NULL   THEN
         RAISE EXCEPTION 'Parámetros inválidos: UUID padre y PID son obligatorios.';
     END IF;
 
@@ -330,8 +326,7 @@ BEGIN
     SELECT id, status, query_exec 
       INTO v_process_id, v_status, v_sql_to_run
     FROM bck.background_process
-    WHERE uuid_parent = p_parent_uuid 
-      AND pid = p_pid ; -- Bloqueamos el registro para nosotros
+    WHERE uuid_child = p_child_uuid ; -- Bloqueamos el registro para nosotros
 
     -- Si no existe un registro con ese PID asignado, retornamos false
     IF v_process_id IS NULL THEN
@@ -386,7 +381,7 @@ BEGIN
             SET status = 'FALLIDO',
                 end_time = clock_timestamp(),
                 failed_attempts = failed_attempts + 1,
-                error_msg = format('PID %s ERROR: %s | CTX: %s', p_pid, v_msg_error, v_context)
+                error_msg = format('ERROR: uuid_child: %s - %s | CTX: %s',p_child_uuid, v_msg_error, v_context)
             WHERE id = v_process_id;
             
             RETURN false;
@@ -410,11 +405,22 @@ ALTER FUNCTION bck.run_task(uuid, text) SET search_path TO bck, public, pg_temp;
  
 ---------------- EXAMPLE USAGE ----------------
 
-SELECT bck.run_task('453d77bc-6e4b-42e0-911f-7a3016470b0b', '123');
+SELECT bck.run_task('fcf47a12-a702-4a8f-826e-4292b99f97e8');
 
+ update bck.background_process set status = 'EJECUTANDO' where uuid_child = 'fcf47a12-a702-4a8f-826e-4292b99f97e8';
 
-select id,pid,status,query_exec, attempts,failed_attempts ,max_attempts , date_update from bck.background_process where uuid_parent = '453d77bc-6e4b-42e0-911f-7a3016470b0b' and pid != 0 ;
+select id,pid,status,query_exec, attempts,failed_attempts ,max_attempts , date_update from bck.background_process where uuid_parent = '453d77bc-6e4b-42e0-911f-7a3016470b0b'   ;
 
+ select pid,status,query_exec, attempts,failed_attempts ,max_attempts , start_time,end_time from bck.background_process where uuid_parent = '453d77bc-6e4b-42e0-911f-7a3016470b0b'   ;
++----+-----+------------+---------------------+----------+-----------------+--------------+-------------------------------+-------------------------------+
+| id | pid |   status   |     query_exec      | attempts | failed_attempts | max_attempts |          start_time           |           end_time            |
++----+-----+------------+---------------------+----------+-----------------+--------------+-------------------------------+-------------------------------+
+|  2 |   0 | LISTO      | select pg_sleep(5); |        0 |               0 |            3 | NULL                          | NULL                          |
+|  3 |   0 | LISTO      | select pg_sleep(5); |        0 |               0 |            3 | NULL                          | NULL                          |
+|  4 |   0 | LISTO      | select pg_sleep(5); |        0 |               0 |            3 | NULL                          | NULL                          |
+|  1 |   0 | COMPLETADO | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 19:09:12.415516-07 | 2026-02-23 19:09:17.420343-07 |
++----+-----+------------+---------------------+----------+-----------------+--------------+-------------------------------+-------------------------------+
+(4 rows)
 
 
 
