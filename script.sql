@@ -149,8 +149,10 @@ FROM cte_metricas;
 
 
 -- 3. Función 1: Inicialización de Inventario
-
+-- Que también que la tabla principal donde se indica la cantidad de procesos te diga tantos exitosos y fallidos y el porcentaje
 -- Esta función valida el "cupo" y reserva el slot de procesos.
+
+
 CREATE OR REPLACE FUNCTION bck.fn_crear_inventario(p_cantidad integer)
 RETURNS uuid
 LANGUAGE plpgsql
@@ -222,7 +224,10 @@ select * from bck.background_inventory where uuid_parent = '453d77bc-6e4b-42e0-9
 
 ---------------- EXAMPLE USAGE ----------------
 --- Que se agreguen en modo de array las querys  
-
+--  dónde registra los procesos que imse inserte con array y retorne ese mismo array
+-- Agregarle otro parámetro para que le ponga nombre a las querys
+--  Agregarle una columna a la tabla de procesos para indicar si fue paralelo, secuencial o random
+	
 CREATE OR REPLACE FUNCTION bck.fn_registrar_proceso(
     p_uuid_parent uuid,
     p_query       text
@@ -316,8 +321,10 @@ select id,uuid_child,pid,status,query_exec, attempts,failed_attempts ,max_attemp
 
  
 ---------------- EXAMPLE USAGE ----------------
--- SELECT bck.run_task('550e8400-e29b-41d4-a716-446655440000', pg_backend_pid());
-
+-- tiene que tener excepción la fun run
+-- En cada proceso al final agregarle para que valide si todavía hay procesos y en caso de que sea el.unico entonces que ponga que el proceso a finalizado con éxito
+-- En caso de que se cancele que se inserte como abortado o cancelado 
+	
 CREATE OR REPLACE FUNCTION bck.run_task(
     p_child_uuid uuid
 )
