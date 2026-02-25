@@ -66,7 +66,10 @@ CREATE TABLE IF NOT EXISTS bck.background_process (
     start_time      timestamptz,
     end_time        timestamptz,
     error_msg       text,
-    
+
+	process_name text,
+	execution_mode text CHECK (execution_mode IN ('PARALLEL', 'SEQUENTIAL', 'RANDOM')) DEFAULT 'PARALLEL',
+	
     -- Auditoría
     date_insert     timestamptz DEFAULT clock_timestamp(),
     date_update     timestamptz DEFAULT clock_timestamp()
@@ -81,17 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_bck_proc_uuid ON bck.background_process(uuid_pare
 CREATE INDEX IF NOT EXISTS idx_bck_proc_status ON bck.background_process(status);
 
  
-CREATE OR REPLACE VIEW bck.vw_status_progreso AS
-SELECT 
-    uuid_parent,
-    count(*) as total,
-    count(*) FILTER (WHERE status = 'COMPLETADO') as hechos,
-    count(*) FILTER (WHERE status = 'FALLIDO') as errores,
-    round((count(*) FILTER (WHERE status = 'COMPLETADO')::float / count(*)::float) * 100) || '%' as porcentaje,
-    rpad('', (round((count(*) FILTER (WHERE status = 'COMPLETADO')::float / count(*)::float) * 10)::int), '█') as barra
-FROM bck.background_process
-GROUP BY uuid_parent;
-
+ 
 
 
 
@@ -112,13 +105,22 @@ cte_metricas AS (
         -- Y que además existen físicamente en pg_stat_activity
         count(a.pid) FILTER (WHERE p.status = 'EJECUTANDO') as workers_activos_motor,
         -- Procesos en cola que aún no inician
-        count(*) FILTER (WHERE p.status = 'LISTO') as en_espera
+        count(*) FILTER (WHERE p.status = 'LISTO') as en_espera,
+        -- Procesos asignados a un worker pero esperando señal
+        count(*) FILTER (WHERE p.status = 'INICIALIZANDO') as inicializando
     FROM bck.background_process p
     LEFT JOIN cte_actividad_real a ON p.pid = a.pid
     GROUP BY p.uuid_parent
 )
 SELECT 
     uuid_parent,
+    CASE 
+        WHEN total_tareas = (completados + fallidos) AND total_tareas > 0 THEN 'FINALIZADO'
+        WHEN workers_activos_motor > 0 THEN 'EJECUTANDO (RUNNING)'
+        WHEN inicializando > 0 THEN 'INICIALIZANDO'
+        WHEN en_espera = total_tareas THEN 'PENDIENTE (POR INICIAR)'
+        ELSE 'EN PROCESO'
+    END as "Estatus Global",
     total_tareas as "Total",
     completados as "Hechos",
     fallidos as "Errores",
@@ -140,19 +142,15 @@ FROM cte_metricas;
 
 
 
+-- Select * from bck.vw_status_progreso ;
 
 
-
-
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
 
 
 -- 3. Función 1: Inicialización de Inventario
--- Que también que la tabla principal donde se indica la cantidad de procesos te diga tantos exitosos y fallidos y el porcentaje
--- Esta función valida el "cupo" y reserva el slot de procesos.
-
-
 CREATE OR REPLACE FUNCTION bck.fn_crear_inventario(p_cantidad integer)
 RETURNS uuid
 LANGUAGE plpgsql
@@ -181,7 +179,7 @@ BEGIN
     INSERT INTO bck.background_inventory (
         uuid_parent, 
         cnt_total_bck, 
-        cnt_used, -- Ajustado al nombre de columna estándar
+        cnt_used_bck, -- Ajustado al nombre de columna estándar
         date_insert
     )
     VALUES (
@@ -205,7 +203,7 @@ $func$;
 select * from bck.fn_crear_inventario(4);
 
 -- truncate table bck.background_inventory  RESTART IDENTITY ;
-select * from bck.background_inventory where uuid_parent = '453d77bc-6e4b-42e0-911f-7a3016470b0b';
+select * from bck.background_inventory where uuid_parent = '75916486-2a9f-41b1-a369-42b339d97d53';
 
 +----+--------------------------------------+---------------+--------------+-----------+-------------------------------+
 | id |             uuid_parent              | cnt_total_bck | cnt_used_bck | force_cnt |          date_insert          |
@@ -218,34 +216,44 @@ select * from bck.background_inventory where uuid_parent = '453d77bc-6e4b-42e0-9
 
 
 
-
 -- ## 4. Función 2: Registro de Tareas (Queries)
  
 
 ---------------- EXAMPLE USAGE ----------------
---- Que se agreguen en modo de array las querys  
---  dónde registra los procesos que imse inserte con array y retorne ese mismo array
--- Agregarle otro parámetro para que le ponga nombre a las querys
---  Agregarle una columna a la tabla de procesos para indicar si fue paralelo, secuencial o random
-	
+--- Quiero que el p_querys sea array y ese array se debe recorrer en orden y se debe insertar de manera automatica en la tabla bck.background_process esto en casos donde no quieres ejecutar 10 veces la misma funcion fn_registrar_proceso con la mimsa query o que sean diferentes querys pero no quieres insertarlo la n cantidad de veces la misma funcion
+
 CREATE OR REPLACE FUNCTION bck.fn_registrar_proceso(
-    p_uuid_parent uuid,
-    p_query       text
+    p_uuid_parent  uuid,
+    p_queries      text[],
+    p_process_name text    DEFAULT NULL,
+    p_mode         text    DEFAULT 'PARALLEL',
+    p_repeat       integer DEFAULT 1
 )
-RETURNS boolean
+RETURNS text[]
 LANGUAGE plpgsql
 AS $func$
 DECLARE
-    v_cnt_total integer;
-    v_cnt_used  integer;
+    v_cnt_total     integer;
+    v_cnt_used      integer;
+    v_query_item    text;
+    v_num_queries   integer;
+    v_total_inserts integer;
+    v_i             integer; -- Contador para el bucle de repetición
 BEGIN
-    -- 1. Validación de parámetros
-    IF p_uuid_parent IS NULL OR p_query IS NULL OR trim(p_query) = '' THEN
-        RAISE EXCEPTION 'Parámetros inválidos: El UUID y la Query son obligatorios.';
+    -- 1. Validación de parámetros iniciales
+    IF p_uuid_parent IS NULL OR p_queries IS NULL OR array_length(p_queries, 1) = 0 THEN
+        RAISE EXCEPTION 'Parámetros inválidos: El UUID y al menos una Query son obligatorios.';
     END IF;
 
-    -- 2. Bloqueo optimista y obtención de contadores
-    -- El FOR UPDATE es crítico para evitar condiciones de carrera (race conditions)
+    IF p_repeat <= 0 THEN
+        RAISE EXCEPTION 'El parámetro p_repeat debe ser mayor a 0.';
+    END IF;
+
+    -- Cálculo de carga total
+    v_num_queries   := array_length(p_queries, 1);
+    v_total_inserts := v_num_queries * p_repeat;
+
+    -- 2. Bloqueo de inventario para control de capacidad
     SELECT cnt_total_bck, cnt_used_bck
       INTO v_cnt_total, v_cnt_used
     FROM bck.background_inventory
@@ -256,65 +264,98 @@ BEGIN
         RAISE EXCEPTION 'Error: El UUID de inventario % no existe.', p_uuid_parent;
     END IF;
 
-    -- 3. Validación de capacidad
-    IF v_cnt_used >= v_cnt_total THEN
-        RAISE EXCEPTION 'Inventario agotado: % posee %/% procesos utilizados.', 
-            p_uuid_parent, v_cnt_used, v_cnt_total;
+    -- 3. Validar si el lote total (incluyendo repeticiones) cabe
+    IF (v_cnt_used + v_total_inserts) > v_cnt_total THEN
+        RAISE EXCEPTION 'Capacidad insuficiente: Espacio disponible %, solicitado % (Queries: % x Repeticiones: %).', 
+            (v_cnt_total - v_cnt_used), v_total_inserts, v_num_queries, p_repeat;
     END IF;
 
-    -- 4. Registrar la tarea en la cola
-    INSERT INTO bck.background_process (
-        uuid_parent, 
-        query_exec, 
-        status, 
-        date_insert
-    )
-    VALUES (
-        p_uuid_parent, 
-        p_query, 
-        'LISTO', 
-        clock_timestamp()
-    );
+    -- 4. Recorrer el array y aplicar repeticiones
+    FOREACH v_query_item IN ARRAY p_queries
+    LOOP
+        IF v_query_item IS NULL OR trim(v_query_item) = '' THEN
+            RAISE EXCEPTION 'Error: Se encontró una query vacía o nula en el array.';
+        END IF;
 
-    -- 5. Incrementar contador en el padre
+        -- Bucle de repetición
+        FOR v_i IN 1..p_repeat LOOP
+            INSERT INTO bck.background_process (
+                uuid_parent, 
+                query_exec, 
+                status, 
+                process_name,
+                execution_mode,
+                date_insert
+            )
+            VALUES (
+                p_uuid_parent, 
+                v_query_item, 
+                'LISTO', 
+                p_process_name,
+                upper(p_mode),
+                clock_timestamp()
+            );
+        END LOOP;
+    END LOOP;
+
+    -- 5. Actualización masiva del contador en el padre
     UPDATE bck.background_inventory 
-    SET cnt_used_bck = cnt_used_bck + 1 
+    SET cnt_used_bck = cnt_used_bck + v_total_inserts 
     WHERE uuid_parent = p_uuid_parent;
 
-    RETURN true;
+    RETURN p_queries;
 
 EXCEPTION 
     WHEN foreign_key_violation THEN
         RAISE EXCEPTION 'Violación de integridad: El UUID padre no es válido.';
     WHEN OTHERS THEN
-        -- Lanzamos el error directamente al contexto del llamador
         RAISE EXCEPTION 'Error en bck.fn_registrar_proceso: % (SQLSTATE: %)', SQLERRM, SQLSTATE;
 END;
 $func$;
 
 
 
+--- Llenado colocando varias querys 
+SELECT bck.fn_registrar_proceso(
+    p_uuid_parent       := '75916486-2a9f-41b1-a369-42b339d97d53', 
+    p_queries           := ARRAY['SELECT pg_sleep(1)' , 'SELECT pg_sleep(2)' , 'SELECT pg_sleep(3)' , 'SELECT pg_sleep(4)' ], 
+    p_process_name      := 'TEST_REPETITIVO', 
+    p_mode              := 'PARALLEL', 
+    p_repeat            := 1
+);
 
 
-SELECT bck.fn_registrar_proceso( '453d77bc-6e4b-42e0-911f-7a3016470b0b', 'select pg_sleep(5);'); -- tiene que retornar la cantidad de registros
+-- llenado multiplicando las querys 
+SELECT bck.fn_registrar_proceso(
+    p_uuid_parent       := '75916486-2a9f-41b1-a369-42b339d97d53', 
+    p_queries           := ARRAY['SELECT pg_sleep(1)'], 
+    p_process_name      := 'TEST_REPETITIVO', 
+    p_mode              := 'PARALLEL', 
+    p_repeat            := 4
+);
 
-select * from bck.background_inventory where uuid_parent = '453d77bc-6e4b-42e0-911f-7a3016470b0b';
 
-select id,uuid_child,pid,status,query_exec, attempts,failed_attempts ,max_attempts , date_update from bck.background_process;
-+----+--------------------------------------+-----+--------+---------------------+----------+-----------------+--------------+-------------------------------+
-| id |              uuid_child              | pid | status |     query_exec      | attempts | failed_attempts | max_attempts |          date_update          |
-+----+--------------------------------------+-----+--------+---------------------+----------+-----------------+--------------+-------------------------------+
-|  1 | fcf47a12-a702-4a8f-826e-4292b99f97e8 |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 19:04:20.916348-07 |
-|  2 | 67b48371-bc6e-4d5e-a3d8-244697d6830d |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 19:04:21.524719-07 |
-|  3 | c1dc6e9d-1a98-4a0f-9eaf-ae24c5c2375a |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 19:04:21.972099-07 |
-|  4 | 367e65cb-835c-4b23-b681-2223847e2749 |   0 | LISTO  | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 19:04:22.483572-07 |
-+----+--------------------------------------+-----+--------+---------------------+----------+-----------------+--------------+-------------------------------+
+
+
+
+select * from bck.background_inventory where uuid_parent = '75916486-2a9f-41b1-a369-42b339d97d53';
+--  update bck.background_inventory set cnt_used_bck = 0  where uuid_parent = '75916486-2a9f-41b1-a369-42b339d97d53';
+
+-- truncate TABLE bck.background_process RESTART IDENTITY ;
+select id,uuid_child,pid,execution_mode,status,query_exec, attempts,failed_attempts ,max_attempts , date_update  from bck.background_process where uuid_parent = '75916486-2a9f-41b1-a369-42b339d97d53';
++----+--------------------------------------+-----+----------------+--------+--------------------+----------+-----------------+--------------+-------------------------------+
+| id |              uuid_child              | pid | execution_mode | status |     query_exec     | attempts | failed_attempts | max_attempts |          date_update          |
++----+--------------------------------------+-----+----------------+--------+--------------------+----------+-----------------+--------------+-------------------------------+
+|  1 | 8349d89c-6d3a-4eaf-aea9-53cf76109f4b |   0 | PARALLEL       | LISTO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.447487-07 |
+|  2 | ac0fc0c6-b19f-45f8-8607-cecf47c37a83 |   0 | PARALLEL       | LISTO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.448472-07 |
+|  3 | 25647917-0c01-4e95-b03a-53d87436f708 |   0 | PARALLEL       | LISTO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.448604-07 |
+|  4 | b2e41db4-ddfa-4555-894c-632e6c78e241 |   0 | PARALLEL       | LISTO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.448701-07 |
++----+--------------------------------------+-----+----------------+--------+--------------------+----------+-----------------+--------------+-------------------------------+
 (4 rows)
 
 
 
 
- 
 
 ---------------------------------------------- EJECUTOR ----------------------------------------------
 
@@ -324,6 +365,7 @@ select id,uuid_child,pid,status,query_exec, attempts,failed_attempts ,max_attemp
 -- tiene que tener excepción la fun run
 -- En cada proceso al final agregarle para que valide si todavía hay procesos y en caso de que sea el.unico entonces que ponga que el proceso a finalizado con éxito
 -- En caso de que se cancele que se inserte como abortado o cancelado 
+
 	
 CREATE OR REPLACE FUNCTION bck.run_task(
     p_child_uuid uuid
@@ -471,13 +513,11 @@ select id,pid,status,query_exec, attempts,failed_attempts ,max_attempts , date_u
 
 ----------- ## 5. Orquestador 
 
-	
---  paralello, random (Random) o secuencial
--- forzar la ejecucion de un uuid_child aunque este completo 
-	
+
 CREATE OR REPLACE FUNCTION bck.fn_lanzar_orquestador(
-    p_uuid_parent uuid,
-    p_force_cnt   boolean DEFAULT false -- p_force_cnt
+    p_uuid_parent uuid
+    ,p_force_cnt   boolean DEFAULT false -- p_force_cnt -- forzar la ejecucion de un uuid_child aunque este completo 
+	,p_type_exec text --  paralello, random (Random) o secuencial
 )
 RETURNS text
 LANGUAGE plpgsql
@@ -551,7 +591,6 @@ SELECT bck.fn_crear_inventario(3) as mi_uuid; -- Supongamos que retorna 'UUID-12
 SELECT bck.fn_registrar_proceso('UUID-123', 'SELECT pg_sleep(10)');
 SELECT bck.fn_registrar_proceso('UUID-123', 'SELECT pg_sleep(15)');
 SELECT bck.fn_registrar_proceso('UUID-123', 'SELECT pg_sleep(5)');
-
 
 
 -- 3. Lanzar (Fase 3)
