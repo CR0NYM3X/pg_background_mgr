@@ -48,6 +48,23 @@ CREATE TABLE IF NOT EXISTS bck.background_inventory (
 ---------------- STRUCTURE ----------------
 
 -- truncate table bck.background_process RESTART IDENTITY ;
+---- Se podria tomar un priority  podría lanzar primero las tareas críticas
+---- Agregarle altun tipo de statment_timeout por proceso o permitirle agregar parametros extras como lock_timeout , etc, ec
+--- Agregar Sistema de Cola Dinámica si quiero ejecutar 100 procesos entonces que siempre se ejecuten solo 20 procesos y en cuando se libere alguno de esos 20 que se vaya ejecutando otro proceos esto solo funciona en modo alatorio. no en paralelo o secuencial
+
+
+/**
+PARALLEL :  Esto siempre se les indica  a los procesos que incie al mismo tiempo  a fuerzas todos los procesos tienen que estar activados en caso de que uno falle se cancela todo
+
+RANDOM :  Este elige a alatoreamente consultas y las ejecuta, obvio siempre primero lanza el proceso, despues valida si se ejecuto el proceso y si se ejecuto entonces le dice que ya se puede ejecutar la intruccion esto por seguridad en casos de que el proceso no se ejecute por x o Y motivo
+
+SEQUENTIAL o Priority : Esto se ejecuta de forma secuencial o prioridad donde el orden importa o la prioridad importa esto permite hacer alguna actividad de forma secuencia . esto los procesos estaran validando siempre el proceso si fallo o se esta ejecutando, y en caso de que falle uno los pendientes se cancelaran 
+por ejemplo se tienen que ejcutar 5 proceos , se lanzo los 5 procesos despues se habilita el primero , se espera a que termine y si una vez que se acomplete se ejecutara el segundo , siempre el proceso que termine dara la orden a su proceso siguiente para que inicie, y en caso si falla por ejemplo el rpceso 
+3  entonces el proceso 4 y 5 se cancelaran por si solos esto debido a que ya se rompera el orden, este comportamiento se puede
+
+**/
+
+
 CREATE TABLE IF NOT EXISTS bck.background_process (
     id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     uuid_parent     uuid NOT NULL REFERENCES bck.background_inventory(uuid_parent) ON DELETE CASCADE,
@@ -517,72 +534,109 @@ select id,uuid_child,pid,execution_mode,status,query_exec, attempts,failed_attem
 
 
 
-
-
-
-
------------ ## 5. Orquestador 
+--- Si este es true y un solo proceso agota sus reintentos de lanzamiento, el Orquestador entrará en modo de Rollback de Emergencia: utilizará pg_terminate_backend() para matar los PIDs que ya había logrado levantar y marcará todo el grupo como fallido.
 
 CREATE OR REPLACE FUNCTION bck.fn_orquestar_lanzamiento(
-    p_uuid_parent uuid
+    p_uuid_parent uuid,
+    p_strict_mode boolean DEFAULT false
 )
 RETURNS text
 LANGUAGE plpgsql
 AS $func$
 DECLARE
-    v_rec           record;
-    v_launched_pid  integer;
-    v_total         integer := 0;
-    v_errors        integer := 0;
-    v_all_ready     boolean := false;
-    v_attempts      integer := 0;
+    v_rec            record;
+    v_launched_pid   integer;
+    v_total          integer := 0;
+    v_errors         integer := 0;
+    v_all_ready      boolean := false;
+    v_wait_attempts  integer := 0;
+    
+    -- Variables para lógica de reintento
+    v_retry_count    integer;
+    v_success_launch boolean;
+    
+    -- Variables para aborto masivo
+    v_kill_rec       record;
 BEGIN
     -- 1. Validación: ¿Existe el inventario?
     IF NOT EXISTS (SELECT 1 FROM bck.background_inventory WHERE uuid_parent = p_uuid_parent) THEN
         RAISE EXCEPTION 'El UUID de inventario % no existe.', p_uuid_parent;
     END IF;
 
-    -- 2. LANZAMIENTO (Fase de Disparo)
-    -- Recorremos solo los que están en LISTO para este padre
+    -- 2. LANZAMIENTO (Fase de Disparo con Reintentos)
     FOR v_rec IN 
-        SELECT uuid_child, execution_mode 
+        SELECT uuid_child, max_attempts 
         FROM bck.background_process 
         WHERE uuid_parent = p_uuid_parent AND status = 'LISTO'
     LOOP
-        BEGIN
-            -- Disparamos el worker usando pg_background_launch
-            -- Le pasamos su propio uuid_child para que sepa qué ejecutar
-            v_launched_pid := pg_background_launch(
-                format('SELECT bck.run_task(%L)', v_rec.uuid_child)
-            );
+        v_retry_count := 0;
+        v_success_launch := false;
 
-            -- Registramos el PID inmediatamente y pasamos a INICIALIZANDO
-            UPDATE bck.background_process 
-            SET pid = v_launched_pid,
-                status = 'INICIALIZANDO',
-                attempts = attempts + 1,
-                date_update = clock_timestamp()
-            WHERE uuid_child = v_rec.uuid_child;
+        WHILE v_retry_count < v_rec.max_attempts AND NOT v_success_launch LOOP
+            BEGIN
+                v_launched_pid := pg_background_launch(
+                    format('SELECT bck.run_task(%L)', v_rec.uuid_child)
+                );
 
-            v_total := v_total + 1;
+                UPDATE bck.background_process 
+                SET pid = v_launched_pid,
+                    status = 'INICIALIZANDO',
+                    attempts = attempts + 1,
+                    date_update = clock_timestamp()
+                WHERE uuid_child = v_rec.uuid_child;
 
-        EXCEPTION WHEN OTHERS THEN
+                v_success_launch := true;
+                v_total := v_total + 1;
+
+            EXCEPTION WHEN OTHERS THEN
+                v_retry_count := v_retry_count + 1;
+                
+                UPDATE bck.background_process 
+                SET failed_attempts = failed_attempts + 1,
+                    error_msg = 'Intento de lanzamiento ' || v_retry_count || ' fallido: ' || SQLERRM,
+                    date_update = clock_timestamp()
+                WHERE uuid_child = v_rec.uuid_child;
+
+                IF v_retry_count < v_rec.max_attempts THEN
+                    PERFORM pg_sleep(0.05);
+                END IF;
+            END;
+        END LOOP;
+
+        -- 2.1 LÓGICA DE ABORTO (MODO ESTRICTO)
+        IF NOT v_success_launch THEN
             v_errors := v_errors + 1;
-            UPDATE bck.background_process 
-            SET status = 'FALLIDO',
-                error_msg = 'Error al lanzar pg_background: ' || SQLERRM
-            WHERE uuid_child = v_rec.uuid_child;
-        END;
+            
+            IF p_strict_mode THEN
+                -- Terminamos todos los PIDs ya lanzados de este inventario
+                FOR v_kill_rec IN 
+                    SELECT pid, uuid_child 
+                    FROM bck.background_process 
+                    WHERE uuid_parent = p_uuid_parent AND pid > 0 AND status = 'INICIALIZANDO'
+                LOOP
+                    PERFORM pg_terminate_backend(v_kill_rec.pid);
+                    
+                    UPDATE bck.background_process 
+                    SET status = 'FALLIDO',
+                        error_msg = 'ABORTADO POR MODO ESTRICTO: Falló el lanzamiento de un proceso hermano.'
+                    WHERE uuid_child = v_kill_rec.uuid_child;
+                END LOOP;
+
+                RAISE EXCEPTION 'ERROR ESTRICTO: Falló el lanzamiento de % y se abortaron los procesos activos.', v_rec.uuid_child;
+            ELSE
+                -- Modo normal: Solo marcamos este como fallido
+                UPDATE bck.background_process 
+                SET status = 'FALLIDO',
+                    error_msg = 'FALLO DEFINITIVO: Máximos intentos de lanzamiento alcanzados.'
+                WHERE uuid_child = v_rec.uuid_child;
+            END IF;
+        END IF;
     END LOOP;
 
-    -- 3. SINCRONIZACIÓN (Fase de Validación)
-    -- Esperamos a que el sistema operativo registre los PIDs en pg_stat_activity
-    -- Esto asegura que los workers ya están en su bucle de polling
-    WHILE NOT v_all_ready AND v_attempts < 50 LOOP
+    -- 3. SINCRONIZACIÓN (Validación en pg_stat_activity)
+    WHILE NOT v_all_ready AND v_wait_attempts < 50 LOOP
         SELECT NOT EXISTS (
-            -- Buscamos si hay algún proceso que lanzamos que NO aparezca en stat_activity
-            SELECT 1 
-            FROM bck.background_process p
+            SELECT 1 FROM bck.background_process p
             LEFT JOIN pg_stat_activity a ON p.pid = a.pid
             WHERE p.uuid_parent = p_uuid_parent 
               AND p.status = 'INICIALIZANDO'
@@ -590,13 +644,12 @@ BEGIN
         ) INTO v_all_ready;
 
         IF NOT v_all_ready THEN
-            PERFORM pg_sleep(0.1); -- Espera activa corta
-            v_attempts := v_attempts + 1;
+            PERFORM pg_sleep(0.1);
+            v_wait_attempts := v_wait_attempts + 1;
         END IF;
     END LOOP;
 
     -- 4. DISPARO MASIVO (Luz Verde)
-    -- Una vez confirmados los PIDs, liberamos a todos los workers al mismo tiempo
     UPDATE bck.background_process 
     SET status = 'EJECUTANDO',
         date_update = clock_timestamp()
@@ -607,11 +660,10 @@ BEGIN
                   p_uuid_parent, v_total, v_errors);
 
 EXCEPTION WHEN OTHERS THEN
-    RAISE EXCEPTION 'Error crítico en orquestador: %', SQLERRM;
+    RAISE NOTICE 'Orquestador abortado: %', SQLERRM;
+    RETURN 'ERROR: El lanzamiento fue cancelado por modo estricto o error crítico.';
 END;
 $func$;
-
-
 --- SELECT bck.fn_orquestar_lanzamiento('UUID-PADRE');
  
 
