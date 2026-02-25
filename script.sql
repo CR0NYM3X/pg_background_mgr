@@ -200,7 +200,7 @@ END;
 $func$;
 
 
-select * from bck.fn_crear_inventario(4);
+select * from bck.fn_crear_inventario(10);
 
 -- truncate table bck.background_inventory  RESTART IDENTITY ;
 select * from bck.background_inventory where uuid_parent = '75916486-2a9f-41b1-a369-42b339d97d53';
@@ -328,10 +328,10 @@ SELECT bck.fn_registrar_proceso(
 -- llenado multiplicando las querys 
 SELECT bck.fn_registrar_proceso(
     p_uuid_parent       := '75916486-2a9f-41b1-a369-42b339d97d53', 
-    p_queries           := ARRAY['SELECT pg_sleep(1)'], 
+    p_queries           := ARRAY['SELECT pg_sleep(3)'], 
     p_process_name      := 'TEST_INDIVIDUAL', 
     p_mode              := 'PARALLEL', 
-    p_repeat            := 4
+    p_repeat            := 10
 );
 
 
@@ -523,66 +523,96 @@ select id,uuid_child,pid,execution_mode,status,query_exec, attempts,failed_attem
 
 ----------- ## 5. Orquestador 
 
-
-CREATE OR REPLACE FUNCTION bck.fn_lanzar_orquestador(
+CREATE OR REPLACE FUNCTION bck.fn_orquestar_lanzamiento(
     p_uuid_parent uuid
-    ,p_force_cnt   boolean DEFAULT false -- p_force_cnt -- forzar la ejecucion de un uuid_child aunque este completo 
-	,p_type_exec text --  paralello, random (Random) o secuencial
 )
 RETURNS text
 LANGUAGE plpgsql
 AS $func$
 DECLARE
     v_rec           record;
-    v_cnt_inventary integer;
-    v_cnt_actual    integer;
-    v_launched      integer := 0;
-    v_pid           integer;
+    v_launched_pid  integer;
+    v_total         integer := 0;
+    v_errors        integer := 0;
+    v_all_ready     boolean := false;
+    v_attempts      integer := 0;
 BEGIN
-    -- 1. Validaciones de control
-    SELECT cnt_total_bck INTO v_cnt_inventary 
-    FROM bck.background_inventory WHERE uuid_parent = p_uuid_parent;
-    
-    SELECT count(*) INTO v_cnt_actual 
-    FROM bck.background_process WHERE uuid_parent = p_uuid_parent;
-
-    IF p_force_cnt AND v_cnt_actual < v_cnt_inventary THEN
-        RAISE EXCEPTION 'Error de Quórum: Se requieren % procesos, pero solo hay % registrados.', 
-            v_cnt_inventary, v_cnt_actual;
+    -- 1. Validación: ¿Existe el inventario?
+    IF NOT EXISTS (SELECT 1 FROM bck.background_inventory WHERE uuid_parent = p_uuid_parent) THEN
+        RAISE EXCEPTION 'El UUID de inventario % no existe.', p_uuid_parent;
     END IF;
 
-    -- 2. Loop de lanzamiento
+    -- 2. LANZAMIENTO (Fase de Disparo)
+    -- Recorremos solo los que están en LISTO para este padre
     FOR v_rec IN 
-        SELECT id, query_exec 
+        SELECT uuid_child, execution_mode 
         FROM bck.background_process 
         WHERE uuid_parent = p_uuid_parent AND status = 'LISTO'
     LOOP
         BEGIN
-            -- Ejecución mediante pg_background (debe estar instalada la extensión)
-            -- Nota: Se asume que la extensión está disponible en el search_path o esquema público
-            v_pid := pg_background_launch(v_rec.query_exec);
+            -- Disparamos el worker usando pg_background_launch
+            -- Le pasamos su propio uuid_child para que sepa qué ejecutar
+            v_launched_pid := pg_background_launch(
+                format('SELECT bck.run_task(%L)', v_rec.uuid_child)
+            );
 
+            -- Registramos el PID inmediatamente y pasamos a INICIALIZANDO
             UPDATE bck.background_process 
-            SET pid = v_pid,
-                status = 'EJECUTANDO',
-                start_time = clock_timestamp()
-            WHERE id = v_rec.id;
+            SET pid = v_launched_pid,
+                status = 'INICIALIZANDO',
+                attempts = attempts + 1,
+                date_update = clock_timestamp()
+            WHERE uuid_child = v_rec.uuid_child;
 
-            v_launched := v_launched + 1;
+            v_total := v_total + 1;
+
         EXCEPTION WHEN OTHERS THEN
+            v_errors := v_errors + 1;
             UPDATE bck.background_process 
             SET status = 'FALLIDO',
-                error_msg = SQLERRM
-            WHERE id = v_rec.id;
+                error_msg = 'Error al lanzar pg_background: ' || SQLERRM
+            WHERE uuid_child = v_rec.uuid_child;
         END;
     END LOOP;
 
-    RETURN format('Lanzamiento finalizado. Exitosos: %1. Fallidos/Omitidos: %2.', 
-                  v_launched, (v_cnt_actual - v_launched));
+    -- 3. SINCRONIZACIÓN (Fase de Validación)
+    -- Esperamos a que el sistema operativo registre los PIDs en pg_stat_activity
+    -- Esto asegura que los workers ya están en su bucle de polling
+    WHILE NOT v_all_ready AND v_attempts < 50 LOOP
+        SELECT NOT EXISTS (
+            -- Buscamos si hay algún proceso que lanzamos que NO aparezca en stat_activity
+            SELECT 1 
+            FROM bck.background_process p
+            LEFT JOIN pg_stat_activity a ON p.pid = a.pid
+            WHERE p.uuid_parent = p_uuid_parent 
+              AND p.status = 'INICIALIZANDO'
+              AND a.pid IS NULL
+        ) INTO v_all_ready;
+
+        IF NOT v_all_ready THEN
+            PERFORM pg_sleep(0.1); -- Espera activa corta
+            v_attempts := v_attempts + 1;
+        END IF;
+    END LOOP;
+
+    -- 4. DISPARO MASIVO (Luz Verde)
+    -- Una vez confirmados los PIDs, liberamos a todos los workers al mismo tiempo
+    UPDATE bck.background_process 
+    SET status = 'EJECUTANDO',
+        date_update = clock_timestamp()
+    WHERE uuid_parent = p_uuid_parent 
+      AND status = 'INICIALIZANDO';
+
+    RETURN format('Orquestación completada. UUID: %s | Lanzados: %s | Fallidos: %s', 
+                  p_uuid_parent, v_total, v_errors);
+
+EXCEPTION WHEN OTHERS THEN
+    RAISE EXCEPTION 'Error crítico en orquestador: %', SQLERRM;
 END;
 $func$;
 
 
+--- SELECT bck.fn_orquestar_lanzamiento('UUID-PADRE');
  
 
 
@@ -603,10 +633,13 @@ SELECT bck.fn_registrar_proceso('UUID-123', 'SELECT pg_sleep(15)');
 SELECT bck.fn_registrar_proceso('UUID-123', 'SELECT pg_sleep(5)');
 
 
--- 3. Lanzar (Fase 3)
-SELECT bck.fn_lanzar_orquestador('UUID-123', true); -- sync o async
+ 
 
-SELECT iniciar;
+-- 3. LANZAR TODO
+SELECT bck.fn_orquestar_lanzamiento('UUID-PADRE');
+
+-- 4. MONITOREAR (Usa tu vista)
+SELECT * FROM bck.vw_status_progreso WHERE uuid_parent = 'UUID-PADRE';
 
 -- 4. Ver progreso
 SELECT * FROM bck.vw_status_progreso WHERE uuid_parent = '6a1b8b2e-e72c-4c87-a88d-29fe4f929b22'; 
