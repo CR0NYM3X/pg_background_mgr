@@ -329,13 +329,10 @@ SELECT bck.fn_registrar_proceso(
 SELECT bck.fn_registrar_proceso(
     p_uuid_parent       := '75916486-2a9f-41b1-a369-42b339d97d53', 
     p_queries           := ARRAY['SELECT pg_sleep(1)'], 
-    p_process_name      := 'TEST_REPETITIVO', 
+    p_process_name      := 'TEST_INDIVIDUAL', 
     p_mode              := 'PARALLEL', 
     p_repeat            := 4
 );
-
-
-
 
 
 select * from bck.background_inventory where uuid_parent = '75916486-2a9f-41b1-a369-42b339d97d53';
@@ -362,11 +359,12 @@ select id,uuid_child,pid,execution_mode,status,query_exec, attempts,failed_attem
 
  
 ---------------- EXAMPLE USAGE ----------------
--- tiene que tener excepción la fun run
--- En cada proceso al final agregarle para que valide si todavía hay procesos y en caso de que sea el.unico entonces que ponga que el proceso a finalizado con éxito
--- En caso de que se cancele que se inserte como abortado o cancelado 
-
+/**
+Esta es la funcion que va utilizar cada proceso para ejecutar las instrucciones.
+**/
 	
+-- En cada proceso al final agregarle para que valide si todavía hay procesos y en caso de que sea el.unico entonces que ponga que el proceso a finalizado con éxito
+
 CREATE OR REPLACE FUNCTION bck.run_task(
     p_child_uuid uuid
 )
@@ -375,103 +373,112 @@ LANGUAGE plpgsql
 SECURITY INVOKER
 AS $func$
 DECLARE
-    v_process_id  bigint;
-    v_sql_to_run  text;
-    v_status      text;
-    v_msg_error   text;
-    v_context     text;
+    -- Variables para el EXCEPTION
+    ex_message      text;
+    ex_context      text;
+    
+    -- Variables de control
+    v_process_id    bigint;
+    v_parent_uuid   uuid;
+    v_sql_to_run    text;
+    v_status        text;
 BEGIN
     -- 1. Validación de parámetros de entrada
-    IF p_child_uuid IS NULL   THEN
-        RAISE EXCEPTION 'Parámetros inválidos: UUID padre y PID son obligatorios.';
+    IF p_child_uuid IS NULL THEN
+        RAISE EXCEPTION 'Parámetros inválidos: UUID hijo es obligatorio.';
     END IF;
 
     -- 2. Localizar y Validar el registro asignado
-    -- Se busca el registro que coincida con el UUID y el PID enviado
-    SELECT id, status, query_exec 
-      INTO v_process_id, v_status, v_sql_to_run
+    SELECT id, uuid_parent, status, query_exec 
+      INTO v_process_id, v_parent_uuid, v_status, v_sql_to_run
     FROM bck.background_process
-    WHERE uuid_child = p_child_uuid ; -- Bloqueamos el registro para nosotros
+    WHERE uuid_child = p_child_uuid;
 
-    -- Si no existe un registro con ese PID asignado, retornamos false
     IF v_process_id IS NULL THEN
         RETURN false;
     END IF;
 
     -- 3. Bucle de Sincronización (Polling)
-    -- Solo entramos si no está ya en 'EJECUTANDO'
     WHILE v_status != 'EJECUTANDO' LOOP
-        -- Verificar si el estatus cambió a algo inválido (por ejemplo, CANCELADO)
         IF v_status NOT IN ('LISTO', 'INICIALIZANDO', 'EJECUTANDO') THEN
             RETURN false;
         END IF;
 
-        PERFORM pg_sleep(0.1); -- Pausa de 100ms
+        PERFORM pg_sleep(0.1); 
         
-        -- Refrescar estatus
         SELECT status INTO v_status 
         FROM bck.background_process 
         WHERE id = v_process_id;
     END LOOP;
 
     -- 4. Fase de Ejecución
-    BEGIN
-        -- Actualizar inicio real de ejecución
-        UPDATE bck.background_process 
-        SET start_time = clock_timestamp(),
-            date_update = clock_timestamp()
-        WHERE id = v_process_id;
+    UPDATE bck.background_process 
+    SET start_time = clock_timestamp(),
+        date_update = clock_timestamp()
+    WHERE id = v_process_id;
 
-        -- Ejecutar el comando SQL dinámico
-        IF v_sql_to_run IS NOT NULL AND trim(v_sql_to_run) != '' THEN
-            EXECUTE v_sql_to_run;
-        ELSE
-            RAISE EXCEPTION 'La instrucción SQL (query_exec) está vacía.';
-        END IF;
+    -- Ejecución del comando SQL dinámico
+    IF v_sql_to_run IS NOT NULL AND trim(v_sql_to_run) != '' THEN
+        EXECUTE v_sql_to_run;
+    ELSE
+        RAISE EXCEPTION 'La instrucción SQL (query_exec) está vacía.';
+    END IF;
 
-        -- Registro de éxito (Completado)
-        UPDATE bck.background_process 
-        SET status = 'COMPLETADO',
-            end_time = clock_timestamp()
-        WHERE id = v_process_id;
+    -- 5. Registro de éxito (Completado)
+    UPDATE bck.background_process 
+    SET status = 'COMPLETADO',
+        end_time = clock_timestamp()
+    WHERE id = v_process_id;
 
-    EXCEPTION 
-        WHEN OTHERS THEN
-            GET STACKED DIAGNOSTICS 
-                v_msg_error = MESSAGE_TEXT,
-                v_context   = PG_EXCEPTION_CONTEXT;
-
-            -- Registro de falla con detalle
-            UPDATE bck.background_process 
-            SET status = 'FALLIDO',
-                end_time = clock_timestamp(),
-                failed_attempts = failed_attempts + 1,
-                error_msg = format('ERROR: uuid_child: %s - %s | CTX: %s',p_child_uuid, v_msg_error, v_context)
-            WHERE id = v_process_id;
-            
-            RETURN false;
-         
-    END;
+    -- 6. LIBERACIÓN DE SLOT EN INVENTARIO (Ruta Feliz)
+    UPDATE bck.background_inventory 
+    SET cnt_used_bck = cnt_used_bck - 1 
+    WHERE uuid_parent = v_parent_uuid;
 
     RETURN true;
+
+-- MANEJO DE ERRORES
+EXCEPTION 
+    WHEN QUERY_CANCELED THEN
+        -- Registro de fallo por cancelación
+        UPDATE bck.background_process 
+        SET status = 'FALLIDO',
+            end_time = clock_timestamp(),
+            failed_attempts = failed_attempts + 1,
+            error_msg = format('CANCELADO: Interrupción externa. uuid_child: %s', p_child_uuid)
+        WHERE id = v_process_id;
+        
+        -- LIBERACIÓN DE SLOT EN INVENTARIO (Ruta Cancelación)
+        UPDATE bck.background_inventory 
+        SET cnt_used_bck = cnt_used_bck - 1 
+        WHERE uuid_parent = v_parent_uuid;
+
+        RAISE NOTICE 'Proceso cancelado para uuid_child: %', p_child_uuid;
+        RETURN false;
+
+    WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS 
+            ex_message = MESSAGE_TEXT,
+            ex_context = PG_EXCEPTION_CONTEXT;
+
+        -- Registro de fallo por error
+        UPDATE bck.background_process 
+        SET status = 'FALLIDO',
+            end_time = clock_timestamp(),
+            failed_attempts = failed_attempts + 1,
+            error_msg = format('ERROR: %s | CTX: %s', ex_message, ex_context)
+        WHERE id = v_process_id;
+        
+        -- LIBERACIÓN DE SLOT EN INVENTARIO (Ruta Error)
+        UPDATE bck.background_inventory 
+        SET cnt_used_bck = cnt_used_bck - 1 
+        WHERE uuid_parent = v_parent_uuid;
+
+        RAISE NOTICE 'Error en worker: %', ex_message;
+        RETURN false;
 END;
 $func$;
 
-
-/* agregar la parte de cancelado
-
-EXCEPTION 
-
-	WHEN QUERY_CANCELED  THEN
-		     -- Registro de falla con detalle
-            UPDATE bck.background_process 
-            SET status = 'FALLIDO',
-                end_time = clock_timestamp(),
-                failed_attempts = failed_attempts + 1,
-                error_msg = format('ERROR: uuid_child: %s - %s | CTX: %s',p_child_uuid, v_msg_error, v_context)
-            WHERE id = v_process_id; 
-
-*/
 
 -- Revocar público
 REVOKE ALL ON FUNCTION bck.run_task(uuid, text) FROM PUBLIC;
@@ -486,21 +493,24 @@ ALTER FUNCTION bck.run_task(uuid, text) SET search_path TO bck, public, pg_temp;
  
 ---------------- EXAMPLE USAGE ----------------
 
-SELECT bck.run_task('fcf47a12-a702-4a8f-826e-4292b99f97e8');
+SELECT bck.run_task('dab7cbd6-5f2a-492c-9b37-1de4abccd957');
 
- update bck.background_process set status = 'EJECUTANDO' where uuid_child = 'fcf47a12-a702-4a8f-826e-4292b99f97e8';
+select * from pg_stat_activity where  query ilike '%run_task%';
+select pg_terminate_backend(2407201);
+select SELECT pg_cancel_backend(16569);
 
-select id,pid,status,query_exec, attempts,failed_attempts ,max_attempts , date_update from bck.background_process where uuid_parent = '453d77bc-6e4b-42e0-911f-7a3016470b0b'   ;
+ update bck.background_process set status = 'EJECUTANDO' where uuid_child = 'db6dfc08-55e1-4b71-8a64-78a4477e0d64';
 
- select pid,status,query_exec, attempts,failed_attempts ,max_attempts , start_time,end_time from bck.background_process where uuid_parent = '453d77bc-6e4b-42e0-911f-7a3016470b0b'   ;
-+----+-----+------------+---------------------+----------+-----------------+--------------+-------------------------------+-------------------------------+
-| id | pid |   status   |     query_exec      | attempts | failed_attempts | max_attempts |          start_time           |           end_time            |
-+----+-----+------------+---------------------+----------+-----------------+--------------+-------------------------------+-------------------------------+
-|  2 |   0 | LISTO      | select pg_sleep(5); |        0 |               0 |            3 | NULL                          | NULL                          |
-|  3 |   0 | LISTO      | select pg_sleep(5); |        0 |               0 |            3 | NULL                          | NULL                          |
-|  4 |   0 | LISTO      | select pg_sleep(5); |        0 |               0 |            3 | NULL                          | NULL                          |
-|  1 |   0 | COMPLETADO | select pg_sleep(5); |        0 |               0 |            3 | 2026-02-23 19:09:12.415516-07 | 2026-02-23 19:09:17.420343-07 |
-+----+-----+------------+---------------------+----------+-----------------+--------------+-------------------------------+-------------------------------+
+
+select id,uuid_child,pid,execution_mode,status,query_exec, attempts,failed_attempts ,max_attempts , date_update  from bck.background_process where uuid_parent = '75916486-2a9f-41b1-a369-42b339d97d53';
++----+--------------------------------------+-----+----------------+------------+--------------------+----------+-----------------+--------------+-------------------------------+
+| id |              uuid_child              | pid | execution_mode |   status   |     query_exec     | attempts | failed_attempts | max_attempts |          date_update          |
++----+--------------------------------------+-----+----------------+------------+--------------------+----------+-----------------+--------------+-------------------------------+
+|  1 | dab7cbd6-5f2a-492c-9b37-1de4abccd957 |   0 | PARALLEL       | LISTO      | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:29:48.340886-07 |
+|  2 | c4c3a8ad-902d-46e0-89d7-3fc4a1ebc1a1 |   0 | PARALLEL       | LISTO      | SELECT pg_sleep(2) |        0 |               0 |            3 | 2026-02-25 00:29:48.341405-07 |
+|  4 | e253b5dc-8764-4eae-9b4d-808dff91198a |   0 | PARALLEL       | LISTO      | SELECT pg_sleep(4) |        0 |               0 |            3 | 2026-02-25 00:29:48.341599-07 |
+|  3 | db6dfc08-55e1-4b71-8a64-78a4477e0d64 |   0 | PARALLEL       | COMPLETADO | SELECT pg_sleep(3) |        0 |               0 |            3 | 2026-02-25 00:43:42.64628-07  |
++----+--------------------------------------+-----+----------------+------------+--------------------+----------+-----------------+--------------+-------------------------------+
 (4 rows)
 
 
