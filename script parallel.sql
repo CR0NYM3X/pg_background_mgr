@@ -36,6 +36,19 @@ create extension pg_background;
 CREATE SCHEMA IF NOT EXISTS bck;
 
 
+-- truncate table bck.background_config RESTART IDENTITY ;
+CREATE TABLE bck.background_config (
+    config_key   text PRIMARY KEY,
+    config_value text NOT NULL,
+    description  text,
+    date_update  timestamptz DEFAULT clock_timestamp()
+);
+
+-- Insertamos el valor por defecto solicitado
+INSERT INTO bck.background_config (config_key, config_value, description)
+VALUES ('max_attempts', '3', 'Número por defecto de reintentos para procesos secuenciales y paralelos.');
+
+
 -- truncate table bck.background_inventory RESTART IDENTITY ;
 CREATE TABLE IF NOT EXISTS bck.background_inventory (
     id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -179,6 +192,8 @@ DECLARE
     v_max_system    integer; -- Capacidad total del servidor
     v_max_safe      integer; -- Capacidad permitida (max - 2)
 BEGIN
+
+	/*
     -- 1. Obtener límites dinámicos del servidor
     v_max_system := current_setting('max_worker_processes')::integer;
     v_max_safe   := v_max_system - 2;
@@ -193,7 +208,8 @@ BEGIN
         RAISE EXCEPTION 'Capacidad insuficiente: Solicitado %, Máximo seguro permitido % Ajuste (max_worker_processes: %)', 
             p_cantidad, v_max_safe, v_max_system;
     END IF;
-
+	*/
+	
     -- 3. Registro en tabla de control interna
     INSERT INTO bck.background_inventory (
         uuid_parent, 
@@ -237,12 +253,8 @@ select * from bck.background_inventory where uuid_parent = '75916486-2a9f-41b1-a
 
 -- ## 4. Función 2: Registro de Tareas (Queries)
 
-	--- En los secuenciales quitar restrinccion de limite de proceos ya que este solo ocupa y en caso de error se rompe la secuencia.
-	--- en paralelo si se agregar restriccion de cantidad de proceos
-	--- en random no se agrega restriccion, pero se tiene limite el limite va ser la cantidad de max_procesess - 10  y esos son los que pueden estar abriendo , cada proceso que termina validara si hay procesos pendientes y lanzara uno nuevo
 
 ---------------- EXAMPLE USAGE ----------------
-
 CREATE OR REPLACE FUNCTION bck.fn_registrar_proceso(
     p_uuid_parent  uuid,
     p_queries      text[],
@@ -259,8 +271,24 @@ DECLARE
     v_query_item    text;
     v_num_queries   integer;
     v_total_inserts integer;
-    v_i             integer; -- Contador para el bucle de repetición
+    v_i             integer;
+    -- Variables para límites de sistema
+    v_max_system    integer;
+    v_max_safe      integer;
+    v_mode_upper    text;
+    -- Variable para configuración dinámica
+    v_default_max_attempts integer;
 BEGIN
+    -- 0. Normalizar modo
+    v_mode_upper := upper(p_mode);
+
+    -- 0.1 Leer configuración dinámica (NUEVO)
+    -- Si no existe la llave, por seguridad ponemos 3 como respaldo
+    SELECT COALESCE(config_value::integer, 3) 
+    INTO v_default_max_attempts 
+    FROM bck.background_config 
+    WHERE config_key = 'max_attempts';
+
     -- 1. Validación de parámetros iniciales
     IF p_uuid_parent IS NULL OR p_queries IS NULL OR array_length(p_queries, 1) = 0 THEN
         RAISE EXCEPTION 'Parámetros inválidos: El UUID y al menos una Query son obligatorios.';
@@ -270,11 +298,24 @@ BEGIN
         RAISE EXCEPTION 'El parámetro p_repeat debe ser mayor a 0.';
     END IF;
 
-    -- Cálculo de carga total
+    -- Cálculo de carga total solicitado
     v_num_queries   := array_length(p_queries, 1);
     v_total_inserts := v_num_queries * p_repeat;
 
-    -- 2. Bloqueo de inventario para control de capacidad
+    -- 2. VALIDACIÓN DE LÍMITES SEGÚN MODO
+    IF v_mode_upper = 'PARALLEL' THEN
+        v_max_system := current_setting('max_worker_processes')::integer;
+        v_max_safe   := v_max_system - 2;
+
+        IF v_max_safe < 1 THEN v_max_safe := 1; END IF;
+
+        IF v_total_inserts > v_max_safe THEN
+            RAISE EXCEPTION 'Capacidad insuficiente para PARALELO: Solicitado %, Máximo seguro % (Ajuste max_worker_processes: % - 2)', 
+                v_total_inserts, v_max_safe, v_max_system;
+        END IF;
+    END IF;
+
+    -- 3. Bloqueo de inventario para control de capacidad interna
     SELECT cnt_total_bck, cnt_used_bck
       INTO v_cnt_total, v_cnt_used
     FROM bck.background_inventory
@@ -285,9 +326,8 @@ BEGIN
         RAISE EXCEPTION 'Error: El UUID de inventario % no existe.', p_uuid_parent;
     END IF;
 
-    -- 3. Validar si el lote total (incluyendo repeticiones) cabe
     IF (v_cnt_used + v_total_inserts) > v_cnt_total THEN
-        RAISE EXCEPTION 'Capacidad insuficiente: Espacio disponible %, solicitado % (Queries: % x Repeticiones: %).', 
+        RAISE EXCEPTION 'Capacidad insuficiente en inventario: Disponible %, solicitado % (Queries: % x Repeticiones: %).', 
             (v_cnt_total - v_cnt_used), v_total_inserts, v_num_queries, p_repeat;
     END IF;
 
@@ -298,7 +338,6 @@ BEGIN
             RAISE EXCEPTION 'Error: Se encontró una query vacía o nula en el array.';
         END IF;
 
-        -- Bucle de repetición
         FOR v_i IN 1..p_repeat LOOP
             INSERT INTO bck.background_process (
                 uuid_parent, 
@@ -306,6 +345,7 @@ BEGIN
                 status, 
                 process_name,
                 execution_mode,
+                max_attempts, -- USAMOS EL VALOR LEÍDO DE LA TABLA
                 date_insert
             )
             VALUES (
@@ -313,7 +353,8 @@ BEGIN
                 v_query_item, 
                 'REGISTRADO', 
                 p_process_name,
-                upper(p_mode),
+                v_mode_upper,
+                v_default_max_attempts, -- VALOR DINÁMICO
                 clock_timestamp()
             );
         END LOOP;
@@ -333,7 +374,6 @@ EXCEPTION
         RAISE EXCEPTION 'Error en bck.fn_registrar_proceso: % (SQLSTATE: %)', SQLERRM, SQLSTATE;
 END;
 $func$;
-
 
 
 --- Llenado colocando varias querys 
@@ -382,6 +422,7 @@ select id,uuid_child,pid,execution_mode,status,query_exec, attempts,failed_attem
 ---------------- EXAMPLE USAGE ----------------
 /**
 Esta es la funcion que va utilizar cada proceso para ejecutar las instrucciones.
+	agregarle un parametro que force el usao de un uuid padre, esto restablece los valores como failed_attempts = 0  y status = REGISTRADO
 **/
 	
 
