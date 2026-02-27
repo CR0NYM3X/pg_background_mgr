@@ -85,38 +85,38 @@ $func$;
 
 
 
-
 CREATE OR REPLACE FUNCTION bck.run_task(p_child_uuid uuid)
 RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER AS $func$
 DECLARE
-    v_rec           record;
-    v_prev_status   text;
-    v_chain_result  text;
+    V_max_attempts   integer;
+    v_fail_count     integer := 0;
+    v_prev_status    text;
+    v_chain_result   text;
+    v_rec            record;
 BEGIN
-    SELECT id, uuid_parent, query_exec, status INTO v_rec
-    FROM bck.background_process WHERE uuid_child = p_child_uuid and execution_mode = 'SEQUENTIAL';
+    -- 1. Obtener datos iniciales (incluyendo max_attempts)
+    SELECT id, uuid_parent, query_exec, status, max_attempts 
+    INTO v_rec
+    FROM bck.background_process 
+    WHERE uuid_child = p_child_uuid AND execution_mode = 'SEQUENTIAL';
 
-    -- 1. Si estamos en LANZADO, esperamos al hermano anterior
+    V_max_attempts := v_rec.max_attempts;
+
+    -- 2. Lógica de Espera Secuencial
     IF v_rec.status = 'LANZADO' THEN
         LOOP
             SELECT status INTO v_prev_status 
             FROM bck.background_process 
-            WHERE uuid_parent = v_rec.uuid_parent AND id < v_rec.id  and execution_mode = 'SEQUENTIAL'
+            WHERE uuid_parent = v_rec.uuid_parent AND id < v_rec.id AND execution_mode = 'SEQUENTIAL'
             ORDER BY id DESC LIMIT 1;
 
-            -- Si el anterior terminó con éxito, tomamos el control
             IF v_prev_status IS NULL OR v_prev_status = 'COMPLETADO' THEN
-                UPDATE bck.background_process 
-                SET status = 'EJECUTANDO', start_time = clock_timestamp() 
-                WHERE id = v_rec.id;
+                UPDATE bck.background_process SET status = 'EJECUTANDO', start_time = clock_timestamp() WHERE id = v_rec.id;
                 EXIT;
             END IF;
 
-            -- Si el anterior falló, la cadena se rompe
             IF v_prev_status = 'FALLIDO' THEN
-                UPDATE bck.background_process 
-                SET status = 'FALLIDO', error_msg = 'CADENA ROTA: El proceso anterior fallo.' 
-                WHERE id = v_rec.id;
+                UPDATE bck.background_process SET status = 'FALLIDO', error_msg = 'CADENA ROTA: El proceso anterior falló.' WHERE id = v_rec.id;
                 RETURN false;
             END IF;
 
@@ -124,27 +124,98 @@ BEGIN
         END LOOP;
     END IF;
 
-    -- 2. Ejecución de la tarea
-    BEGIN
-        EXECUTE v_rec.query_exec;
-        
-        UPDATE bck.background_process SET status = 'COMPLETADO', end_time = clock_timestamp() WHERE id = v_rec.id;
-        UPDATE bck.background_inventory SET cnt_used_bck = cnt_used_bck - 1 WHERE uuid_parent = v_rec.uuid_parent;
+    -- 3. BUCLE DE EJECUCIÓN (Reintentos de Query)
+    WHILE v_fail_count < V_max_attempts LOOP
+        BEGIN
+            -- Intentar ejecutar la tarea
+            EXECUTE v_rec.query_exec;
+            
+            -- Si llegamos aquí, fue ÉXITO
+            UPDATE bck.background_process 
+            SET status = 'COMPLETADO', end_time = clock_timestamp(), error_msg = NULL 
+            WHERE id = v_rec.id;
+            
+            UPDATE bck.background_inventory SET cnt_used_bck = cnt_used_bck - 1 WHERE uuid_parent = v_rec.uuid_parent;
 
-        -- 3. RELEVO: Disparar al siguiente
-        v_chain_result := bck.fn_launch_sequential_chain(v_rec.uuid_parent);
+            -- RELEVO: Disparar al siguiente
+            v_chain_result := bck.fn_launch_sequential_chain(v_rec.uuid_parent);
+            
+            RETURN true; -- Finaliza el worker con éxito
 
-    EXCEPTION WHEN OTHERS THEN
-        UPDATE bck.background_process SET status = 'FALLIDO', error_msg = 'ERROR SQL: ' || SQLERRM, end_time = clock_timestamp() WHERE id = v_rec.id;
-        UPDATE bck.background_inventory SET cnt_used_bck = cnt_used_bck - 1 WHERE uuid_parent = v_rec.uuid_parent;
-        RETURN false;
-    END;
+        EXCEPTION WHEN OTHERS THEN
+            -- Manejo del fallo
+            v_fail_count := v_fail_count + 1;
+            
+            -- Actualizar la tabla con el intento fallido
+            UPDATE bck.background_process 
+            SET failed_attempts = v_fail_count, 
+                error_msg = 'Intento ' || v_fail_count || ' fallido: ' || SQLERRM,
+                date_update = clock_timestamp()
+            WHERE id = v_rec.id;
 
-    RETURN true;
+            -- Si aún quedan intentos, esperamos un poco y el WHILE hará la siguiente vuelta
+            IF v_fail_count < V_max_attempts THEN
+                PERFORM pg_sleep(0.5);
+            ELSE
+                -- Si ya no hay intentos, marcamos FALLIDO definitivo y cerramos inventario
+                UPDATE bck.background_process SET status = 'FALLIDO', end_time = clock_timestamp() WHERE id = v_rec.id;
+                UPDATE bck.background_inventory SET cnt_used_bck = cnt_used_bck - 1 WHERE uuid_parent = v_rec.uuid_parent;
+                RETURN false; -- Rompe la cadena
+            END IF;
+        END;
+    END LOOP;
+    
+    RETURN false;
 END;
 $func$;
 
 
 
+/**
 
+
+ CREATE TABLE clientes (
+    cliente_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    nombre TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    fecha_registro TIMESTAMP DEFAULT now(),
+    puntos_lealtad INTEGER DEFAULT 0,
+    activo BOOLEAN DEFAULT true
+);
+
+
+INSERT INTO clientes (nombre, email, puntos_lealtad)
+VALUES (
+    'Usuario_' || substr(md5(random()::text), 1, 8), -- Nombre aleatorio corto
+    'test_' || substr(md5(random()::text), 1, 5) || '@ejemplo.com', -- Email único
+    floor(random() * 1000)::int -- Puntos entre 0 y 999
+);
+
+select * from clientes;
+
+  select * from bck.fn_crear_inventario(1000);
+
+SELECT bck.fn_registrar_proceso(
+    p_uuid_parent       := 'e1ce73f0-0f57-4b8c-b31a-e6a8f23e07f7', 
+    p_queries           := ARRAY['$$ INSERT INTO clientes (nombre, email, puntos_lealtad)
+VALUES (
+    'Usuario_' || substr(md5(random()::text), 1, 8), -- Nombre aleatorio corto
+    'test_' || substr(md5(random()::text), 1, 5) || '@ejemplo.com', -- Email único
+    floor(random() * 1000)::int -- Puntos entre 0 y 999
+); $$], 
+    p_process_name      := 'TEST_INDIVIDUAL', 
+    p_mode              := 'PARALLEL', 
+    p_repeat            := 1000
+);
+
+
+
+ update bck.background_process set status = 'REGISTRADO' , failed_attempts = 0, error_msg = null , execution_mode = 'SEQUENTIAL';
+ 
+SELECT bck.fn_launch_sequential_chain('e1ce73f0-0f57-4b8c-b31a-e6a8f23e07f7');
+
+
+
+
+**/
 
