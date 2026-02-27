@@ -235,7 +235,10 @@ select * from bck.background_inventory where uuid_parent = '75916486-2a9f-41b1-a
 
 
 -- ## 4. Función 2: Registro de Tareas (Queries)
- 
+
+	--- En los secuenciales quitar restrinccion de limite de proceos ya que este solo ocupa y en caso de error se rompe la secuencia.
+	--- en paralelo si se agregar restriccion de cantidad de proceos
+	--- en random no se agrega restriccion, pero se tiene limite el limite va ser la cantidad de max_procesess - 10  y esos son los que pueden estar abriendo , cada proceso que termina validara si hay procesos pendientes y lanzara uno nuevo
 
 ---------------- EXAMPLE USAGE ----------------
 
