@@ -25,7 +25,8 @@ create database test;
 create extension pg_background;
 
 
-
+----------------------- Agregar validacion de PARALLEL
+	and execution_mode = 'PARALLEL';
 
 	
 */
