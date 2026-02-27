@@ -783,3 +783,12 @@ SELECT * FROM bck.vw_status_progreso WHERE uuid_parent = 'UUID-PADRE';
 SELECT * FROM bck.vw_status_progreso WHERE uuid_parent = '6a1b8b2e-e72c-4c87-a88d-29fe4f929b22'; 
 
 select * from pg_stat_activity where backend_type  = 'pg_background'
+
+
+
+
+update bck.background_process set status = 'REGISTRADO' , failed_attempts = 0, error_msg = null , execution_mode = 'PARALLEL';
+SELECT bck.fn_launch_parallel_sync('5cf1f8cd-a7ca-4d01-a8d2-edd4eab51021');
+
+
+
