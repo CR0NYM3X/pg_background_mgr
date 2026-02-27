@@ -70,8 +70,9 @@ CREATE TABLE IF NOT EXISTS bck.background_process (
     uuid_parent     uuid NOT NULL REFERENCES bck.background_inventory(uuid_parent) ON DELETE CASCADE,
     uuid_child     uuid DEFAULT gen_random_uuid() UNIQUE,
     pid             integer DEFAULT 0,
-    status          text DEFAULT 'LISTO' 
-                    CHECK (status IN ('LISTO', 'INICIALIZANDO', 'EJECUTANDO', 'COMPLETADO', 'FALLIDO')),
+    status          text DEFAULT 'REGISTRADO' 
+                    CHECK (status IN ('REGISTRADO', 'LANZADO', 'EJECUTANDO', 'COMPLETADO', 'FALLIDO')),
+					-- CHECK (status IN ('REGISTRADO', 'LANZADO', 'EJECUTANDO', 'COMPLETADO', 'FALLIDO')),
     query_exec      text NOT NULL,
     
     -- Control de reintentos (Basado en tu idea original)
@@ -95,7 +96,7 @@ CREATE TABLE IF NOT EXISTS bck.background_process (
 
 ---------------- INDEXES ----------------
 -- Indice para que el worker encuentre tareas rápidas sin bloquear toda la tabla
-CREATE INDEX IF NOT EXISTS idx_bck_proc_lookup ON bck.background_process (uuid_parent, status, pid) WHERE status = 'LISTO';
+CREATE INDEX IF NOT EXISTS idx_bck_proc_lookup ON bck.background_process (uuid_parent, status, pid) WHERE status = 'REGISTRADO';
 
 CREATE INDEX IF NOT EXISTS idx_bck_proc_uuid ON bck.background_process(uuid_parent);
 CREATE INDEX IF NOT EXISTS idx_bck_proc_status ON bck.background_process(status);
@@ -122,9 +123,9 @@ cte_metricas AS (
         -- Y que además existen físicamente en pg_stat_activity
         count(a.pid) FILTER (WHERE p.status = 'EJECUTANDO') as workers_activos_motor,
         -- Procesos en cola que aún no inician
-        count(*) FILTER (WHERE p.status = 'LISTO') as en_espera,
+        count(*) FILTER (WHERE p.status = 'REGISTRADO') as en_espera,
         -- Procesos asignados a un worker pero esperando señal
-        count(*) FILTER (WHERE p.status = 'INICIALIZANDO') as inicializando
+        count(*) FILTER (WHERE p.status = 'LANZADO') as LANZADO
     FROM bck.background_process p
     LEFT JOIN cte_actividad_real a ON p.pid = a.pid
     GROUP BY p.uuid_parent
@@ -134,7 +135,7 @@ SELECT
     CASE 
         WHEN total_tareas = (completados + fallidos) AND total_tareas > 0 THEN 'FINALIZADO'
         WHEN workers_activos_motor > 0 THEN 'EJECUTANDO (RUNNING)'
-        WHEN inicializando > 0 THEN 'INICIALIZANDO'
+        WHEN LANZADO > 0 THEN 'LANZADO'
         WHEN en_espera = total_tareas THEN 'PENDIENTE (POR INICIAR)'
         ELSE 'EN PROCESO'
     END as "Estatus Global",
@@ -237,7 +238,6 @@ select * from bck.background_inventory where uuid_parent = '75916486-2a9f-41b1-a
  
 
 ---------------- EXAMPLE USAGE ----------------
---- Quiero que el p_querys sea array y ese array se debe recorrer en orden y se debe insertar de manera automatica en la tabla bck.background_process esto en casos donde no quieres ejecutar 10 veces la misma funcion fn_registrar_proceso con la mimsa query o que sean diferentes querys pero no quieres insertarlo la n cantidad de veces la misma funcion
 
 CREATE OR REPLACE FUNCTION bck.fn_registrar_proceso(
     p_uuid_parent  uuid,
@@ -307,7 +307,7 @@ BEGIN
             VALUES (
                 p_uuid_parent, 
                 v_query_item, 
-                'LISTO', 
+                'REGISTRADO', 
                 p_process_name,
                 upper(p_mode),
                 clock_timestamp()
@@ -360,10 +360,10 @@ select id,uuid_child,pid,execution_mode,status,query_exec, attempts,failed_attem
 +----+--------------------------------------+-----+----------------+--------+--------------------+----------+-----------------+--------------+-------------------------------+
 | id |              uuid_child              | pid | execution_mode | status |     query_exec     | attempts | failed_attempts | max_attempts |          date_update          |
 +----+--------------------------------------+-----+----------------+--------+--------------------+----------+-----------------+--------------+-------------------------------+
-|  1 | 8349d89c-6d3a-4eaf-aea9-53cf76109f4b |   0 | PARALLEL       | LISTO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.447487-07 |
-|  2 | ac0fc0c6-b19f-45f8-8607-cecf47c37a83 |   0 | PARALLEL       | LISTO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.448472-07 |
-|  3 | 25647917-0c01-4e95-b03a-53d87436f708 |   0 | PARALLEL       | LISTO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.448604-07 |
-|  4 | b2e41db4-ddfa-4555-894c-632e6c78e241 |   0 | PARALLEL       | LISTO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.448701-07 |
+|  1 | 8349d89c-6d3a-4eaf-aea9-53cf76109f4b |   0 | PARALLEL       | REGISTRADO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.447487-07 |
+|  2 | ac0fc0c6-b19f-45f8-8607-cecf47c37a83 |   0 | PARALLEL       | REGISTRADO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.448472-07 |
+|  3 | 25647917-0c01-4e95-b03a-53d87436f708 |   0 | PARALLEL       | REGISTRADO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.448604-07 |
+|  4 | b2e41db4-ddfa-4555-894c-632e6c78e241 |   0 | PARALLEL       | REGISTRADO  | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:25:11.448701-07 |
 +----+--------------------------------------+-----+----------------+--------+--------------------+----------+-----------------+--------------+-------------------------------+
 (4 rows)
 
@@ -380,7 +380,6 @@ select id,uuid_child,pid,execution_mode,status,query_exec, attempts,failed_attem
 Esta es la funcion que va utilizar cada proceso para ejecutar las instrucciones.
 **/
 	
--- En cada proceso al final agregarle para que valide si todavía hay procesos y en caso de que sea el.unico entonces que ponga que el proceso a finalizado con éxito
 
 CREATE OR REPLACE FUNCTION bck.run_task(
     p_child_uuid uuid
@@ -417,7 +416,7 @@ BEGIN
 
     -- 3. Bucle de Sincronización (Polling)
     WHILE v_status != 'EJECUTANDO' LOOP
-        IF v_status NOT IN ('LISTO', 'INICIALIZANDO', 'EJECUTANDO') THEN
+        IF v_status NOT IN ('REGISTRADO', 'LANZADO', 'EJECUTANDO') THEN
             RETURN false;
         END IF;
 
@@ -523,154 +522,196 @@ select id,uuid_child,pid,execution_mode,status,query_exec, attempts,failed_attem
 +----+--------------------------------------+-----+----------------+------------+--------------------+----------+-----------------+--------------+-------------------------------+
 | id |              uuid_child              | pid | execution_mode |   status   |     query_exec     | attempts | failed_attempts | max_attempts |          date_update          |
 +----+--------------------------------------+-----+----------------+------------+--------------------+----------+-----------------+--------------+-------------------------------+
-|  1 | dab7cbd6-5f2a-492c-9b37-1de4abccd957 |   0 | PARALLEL       | LISTO      | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:29:48.340886-07 |
-|  2 | c4c3a8ad-902d-46e0-89d7-3fc4a1ebc1a1 |   0 | PARALLEL       | LISTO      | SELECT pg_sleep(2) |        0 |               0 |            3 | 2026-02-25 00:29:48.341405-07 |
-|  4 | e253b5dc-8764-4eae-9b4d-808dff91198a |   0 | PARALLEL       | LISTO      | SELECT pg_sleep(4) |        0 |               0 |            3 | 2026-02-25 00:29:48.341599-07 |
+|  1 | dab7cbd6-5f2a-492c-9b37-1de4abccd957 |   0 | PARALLEL       | REGISTRADO      | SELECT pg_sleep(1) |        0 |               0 |            3 | 2026-02-25 00:29:48.340886-07 |
+|  2 | c4c3a8ad-902d-46e0-89d7-3fc4a1ebc1a1 |   0 | PARALLEL       | REGISTRADO      | SELECT pg_sleep(2) |        0 |               0 |            3 | 2026-02-25 00:29:48.341405-07 |
+|  4 | e253b5dc-8764-4eae-9b4d-808dff91198a |   0 | PARALLEL       | REGISTRADO      | SELECT pg_sleep(4) |        0 |               0 |            3 | 2026-02-25 00:29:48.341599-07 |
 |  3 | db6dfc08-55e1-4b71-8a64-78a4477e0d64 |   0 | PARALLEL       | COMPLETADO | SELECT pg_sleep(3) |        0 |               0 |            3 | 2026-02-25 00:43:42.64628-07  |
 +----+--------------------------------------+-----+----------------+------------+--------------------+----------+-----------------+--------------+-------------------------------+
 (4 rows)
 
 
 
+	
+------------------------------------------
+ 
 
-
---- Si este es true y un solo proceso agota sus reintentos de lanzamiento, el Orquestador entrará en modo de Rollback de Emergencia: utilizará pg_terminate_backend() para matar los PIDs que ya había logrado levantar y marcará todo el grupo como fallido.
-
-CREATE OR REPLACE FUNCTION bck.fn_orquestar_lanzamiento(
-    p_uuid_parent uuid,
-    p_strict_mode boolean DEFAULT false
+CREATE OR REPLACE FUNCTION bck.fn_launch_parallel_sync(
+    p_uuid_parent uuid
 )
 RETURNS text
 LANGUAGE plpgsql
 AS $func$
 DECLARE
-    v_rec            record;
-    v_launched_pid   integer;
-    v_total          integer := 0;
-    v_errors         integer := 0;
-    v_all_ready      boolean := false;
-    v_wait_attempts  integer := 0;
+    -- Configuración
+    v_max_safe      integer := (current_setting('max_worker_processes')::int - 5);
+    v_wait_min      integer := 30;
     
-    -- Variables para lógica de reintento
-    v_retry_count    integer;
-    v_success_launch boolean;
-    
-    -- Variables para aborto masivo
-    v_kill_rec       record;
+    -- Control
+    v_needed        integer;
+    v_current_bck   integer;
+    v_success_pids  int[] := '{}';
+    v_start_wait    timestamptz := clock_timestamp();
+    v_rec           record;
+    v_pid           integer;
+    v_cnt           integer := 0;
+    -- Estado de Aborto
+    v_abort_now     boolean := false;
+    v_culprit_uuid  uuid;
+    v_error_msg     text;
 BEGIN
-    -- 1. Validación: ¿Existe el inventario?
-    IF NOT EXISTS (SELECT 1 FROM bck.background_inventory WHERE uuid_parent = p_uuid_parent) THEN
-        RAISE EXCEPTION 'El UUID de inventario % no existe.', p_uuid_parent;
+    -- 1. Validación de Capacidad Inicial
+    SELECT count(*) INTO v_needed FROM bck.background_process 
+    WHERE uuid_parent = p_uuid_parent AND status = 'REGISTRADO';
+
+    IF v_needed = 0 THEN 
+        RAISE NOTICE '[INFO] No se encontraron procesos con estatus REGISTRADO para el UUID: %', p_uuid_parent;
+        RETURN 'INFO: Sin procesos pendientes.'; 
     END IF;
+    
+    RAISE NOTICE '[STEP 1] Iniciando orquestación para % procesos. Límite de seguridad: %', v_needed, v_max_safe;
 
-    -- 2. LANZAMIENTO (Fase de Disparo con Reintentos)
-    FOR v_rec IN 
-        SELECT uuid_child, max_attempts 
-        FROM bck.background_process 
-        WHERE uuid_parent = p_uuid_parent AND status = 'LISTO'
+    -- 2. Bucle de Espera de Slots
     LOOP
-        v_retry_count := 0;
-        v_success_launch := false;
+        PERFORM pg_stat_clear_snapshot();
+        SELECT count(*) INTO v_current_bck FROM pg_stat_activity WHERE backend_type = 'pg_background';
+        
+        IF (v_current_bck + v_needed) <= v_max_safe THEN
+            RAISE NOTICE '[STEP 2] Capacidad confirmada. Slots ocupados: %, Disponibles para este lote: %', v_current_bck, v_needed;
+            EXIT;
+        END IF;
+        
+        IF clock_timestamp() > v_start_wait + (v_wait_min || ' minutes')::interval THEN
+            RAISE NOTICE '[ERROR] Timeout alcanzado (30 min). Abortando por falta de slots.';
+            RAISE EXCEPTION 'Timeout 30m: Capacidad insuficiente en el servidor.';
+        END IF;
+        
+        RAISE NOTICE '[WAIT] Slots insuficientes (Ocupados: %). Reintentando en 10s...', v_current_bck;
+        PERFORM pg_sleep(10);
+    END LOOP;
 
-        WHILE v_retry_count < v_rec.max_attempts AND NOT v_success_launch LOOP
-            BEGIN
-                v_launched_pid := pg_background_launch(
-                    format('SELECT bck.run_task(%L)', v_rec.uuid_child)
-                );
+    -- 3. Bucle de Lanzamiento Principal
+    RAISE NOTICE '[STEP 3] Comenzando fase de lanzamiento individual...';
+    
+    FOR v_rec IN SELECT uuid_child, max_attempts FROM bck.background_process WHERE uuid_parent = p_uuid_parent AND status = 'REGISTRADO' LOOP
+        DECLARE
+            v_success_this boolean := false;
+            v_fail_count   integer := 0;
+        BEGIN
+			v_cnt := v_cnt + 1; 
+			
+            RAISE NOTICE ' -> Procesando #% hijo: % (Intentos permitidos: %)',v_cnt, v_rec.uuid_child, v_rec.max_attempts;
 
-                UPDATE bck.background_process 
-                SET pid = v_launched_pid,
-                    status = 'INICIALIZANDO',
-                    attempts = attempts + 1,
-                    date_update = clock_timestamp()
-                WHERE uuid_child = v_rec.uuid_child;
+            WHILE v_fail_count < v_rec.max_attempts AND NOT v_success_this LOOP
+                BEGIN
+					
+                    -- A. Lanzamiento
+                    v_pid := pg_background_launch(format($_bck_$ SELECT bck.run_task(%L) $_bck_$, v_rec.uuid_child));
+                    
+					PERFORM pg_sleep(0.1);
+                    -- B. Validación física
+                    PERFORM pg_stat_clear_snapshot();
+                    IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = v_pid) THEN
+                        
+                        RAISE NOTICE '    [OK] Lanzado PID: %. Ejecutando detach...', v_pid;
+                        
+                        -- C. DETACH
+                        PERFORM pg_background_detach(v_pid);
+                        
+                        UPDATE bck.background_process 
+                        SET pid = v_pid, 
+                            status = 'LANZADO', 
+                            attempts = attempts + 1, 
+                            date_update = clock_timestamp() 
+                        WHERE uuid_child = v_rec.uuid_child;
+                        
+                        v_success_pids := array_append(v_success_pids, v_pid);
+                        v_success_this := true;
+                    ELSE
+                        RAISE EXCEPTION 'PID % no fue visible en pg_stat_activity', v_pid;
+                    END IF;
 
-                v_success_launch := true;
-                v_total := v_total + 1;
-
-            EXCEPTION WHEN OTHERS THEN
-                v_retry_count := v_retry_count + 1;
-                
-                UPDATE bck.background_process 
-                SET failed_attempts = failed_attempts + 1,
-                    error_msg = 'Intento de lanzamiento ' || v_retry_count || ' fallido: ' || SQLERRM,
-                    date_update = clock_timestamp()
-                WHERE uuid_child = v_rec.uuid_child;
-
-                IF v_retry_count < v_rec.max_attempts THEN
-                    PERFORM pg_sleep(0.05);
-                END IF;
-            END;
-        END LOOP;
-
-        -- 2.1 LÓGICA DE ABORTO (MODO ESTRICTO)
-        IF NOT v_success_launch THEN
-            v_errors := v_errors + 1;
-            
-            IF p_strict_mode THEN
-                -- Terminamos todos los PIDs ya lanzados de este inventario
-                FOR v_kill_rec IN 
-                    SELECT pid, uuid_child 
-                    FROM bck.background_process 
-                    WHERE uuid_parent = p_uuid_parent AND pid > 0 AND status = 'INICIALIZANDO'
-                LOOP
-                    PERFORM pg_terminate_backend(v_kill_rec.pid);
+                EXCEPTION WHEN OTHERS THEN
+					v_cnt := v_cnt - 1; 
+                    v_fail_count := v_fail_count + 1;
+                    RAISE NOTICE '    [RETRY %/%] Falló lanzamiento de %. Motivo: %', v_fail_count, v_rec.max_attempts, v_rec.uuid_child, SQLERRM;
                     
                     UPDATE bck.background_process 
-                    SET status = 'FALLIDO',
-                        error_msg = 'ABORTADO POR MODO ESTRICTO: Falló el lanzamiento de un proceso hermano.'
-                    WHERE uuid_child = v_kill_rec.uuid_child;
-                END LOOP;
+                    SET failed_attempts = v_fail_count, 
+                        error_msg = SQLERRM, 
+                        date_update = clock_timestamp() 
+                    WHERE uuid_child = v_rec.uuid_child;
+                    
+                    PERFORM pg_sleep(0.2);
+                END;
+				
+				
+            END LOOP;
 
-                RAISE EXCEPTION 'ERROR ESTRICTO: Falló el lanzamiento de % y se abortaron los procesos activos.', v_rec.uuid_child;
-            ELSE
-                -- Modo normal: Solo marcamos este como fallido
-                UPDATE bck.background_process 
-                SET status = 'FALLIDO',
-                    error_msg = 'FALLO DEFINITIVO: Máximos intentos de lanzamiento alcanzados.'
-                WHERE uuid_child = v_rec.uuid_child;
+            -- Verificación de fracaso tras reintentos
+            IF NOT v_success_this THEN
+                RAISE NOTICE '[FATAL] El proceso % falló todos sus intentos.', v_rec.uuid_child;
+                v_abort_now    := true;
+                v_culprit_uuid := v_rec.uuid_child;
+                v_error_msg    := 'Fallo definitivo tras agotar reintentos de lanzamiento.';
+                EXIT; -- Sale del FOR principal
             END IF;
-        END IF;
+        END;
     END LOOP;
 
-    -- 3. SINCRONIZACIÓN (Validación en pg_stat_activity)
-    WHILE NOT v_all_ready AND v_wait_attempts < 50 LOOP
-        SELECT NOT EXISTS (
-            SELECT 1 FROM bck.background_process p
-            LEFT JOIN pg_stat_activity a ON p.pid = a.pid
-            WHERE p.uuid_parent = p_uuid_parent 
-              AND p.status = 'INICIALIZANDO'
-              AND a.pid IS NULL
-        ) INTO v_all_ready;
-
-        IF NOT v_all_ready THEN
-            PERFORM pg_sleep(0.1);
-            v_wait_attempts := v_wait_attempts + 1;
+    -- 4. Gestión de Aborto Masivo o Sincronización Final
+    IF v_abort_now THEN
+        RAISE NOTICE '[STEP 4] INICIANDO KILL SWITCH. Culpable: %', v_culprit_uuid;
+        
+        IF array_length(v_success_pids, 1) > 0 THEN
+            RAISE NOTICE ' -> Terminando % procesos hermanos que ya estaban lanzados...', array_length(v_success_pids, 1);
+            PERFORM pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid = ANY(v_success_pids);
         END IF;
-    END LOOP;
 
-    -- 4. DISPARO MASIVO (Luz Verde)
-    UPDATE bck.background_process 
-    SET status = 'EJECUTANDO',
-        date_update = clock_timestamp()
-    WHERE uuid_parent = p_uuid_parent 
-      AND status = 'INICIALIZANDO';
+        -- Actualización masiva de estatus por fallo
+        UPDATE bck.background_process 
+        SET status = 'FALLIDO', error_msg = 'ORIGEN DEL ABORTO: ' || v_error_msg 
+        WHERE uuid_child = v_culprit_uuid;
 
-    RETURN format('Orquestación completada. UUID: %s | Lanzados: %s | Fallidos: %s', 
-                  p_uuid_parent, v_total, v_errors);
+        UPDATE bck.background_process 
+        SET status = 'FALLIDO', error_msg = 'CANCELADO: Abortado por fallo en worker ' || v_culprit_uuid 
+        WHERE uuid_parent = p_uuid_parent AND status IN ('LANZADO', 'REGISTRADO') AND uuid_child <> v_culprit_uuid;
+
+        RAISE NOTICE '[DONE] El lote ha sido cancelado y los PIDs han sido terminados.';
+        RETURN 'ERROR: Ejecución cancelada.';
+    ELSE
+        -- 5. SEÑAL DE INICIO (EJECUTANDO)
+        RAISE NOTICE '[STEP 5] Todos los workers listos. Enviando señal de inicio masivo...';
+        
+        UPDATE bck.background_process 
+        SET status = 'EJECUTANDO', date_update = clock_timestamp() 
+        WHERE uuid_parent = p_uuid_parent AND status = 'LANZADO';
+        
+        RAISE NOTICE '[SUCCESS] Lote de procesos en ejecución.';
+        RETURN format('ÉXITO: %s%% procesos lanzados en paralelo.', array_length(v_success_pids, 1));
+    END IF;
 
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'Orquestador abortado: %', SQLERRM;
-    RETURN 'ERROR: El lanzamiento fue cancelado por modo estricto o error crítico.';
+    RAISE NOTICE '[CRITICAL ERROR] Fallo en orquestador: %', SQLERRM;
+
+	IF array_length(v_success_pids, 1) > 0 THEN
+		RAISE NOTICE ' -> Terminando % procesos hermanos que ya estaban lanzados...', array_length(v_success_pids, 1);
+		PERFORM pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid = ANY(v_success_pids);
+	END IF;
+	
+    UPDATE bck.background_process 
+    SET status = 'FALLIDO', error_msg = 'FALLO INESPERADO: ' || SQLERRM 
+    WHERE uuid_parent = p_uuid_parent;
+	
+    RETURN 'FALLO INESPERADO: ' || SQLERRM;
 END;
 $func$;
---- SELECT bck.fn_orquestar_lanzamiento('UUID-PADRE');
  
 
 
+-- Seguridad y Path
+ALTER FUNCTION bck.fn_launch_parallel_sync(uuid) SET search_path TO bck, public, pg_temp;
 
-
- 
+REVOKE ALL ON FUNCTION bck.fn_launch_parallel_sync(uuid) FROM PUBLIC;
 
 
 ------------------------------------------------------------------------------------------------------------------------
