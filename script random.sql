@@ -5,6 +5,7 @@ VALUES ('max_bck_random', '0', 'Límite de procesos simultáneos para modo RANDO
 
 
 
+
 CREATE OR REPLACE FUNCTION bck.fn_launch_random_swarm(p_uuid_parent uuid)
 RETURNS text LANGUAGE plpgsql AS $func$
 DECLARE
@@ -12,6 +13,8 @@ DECLARE
     v_launched    integer := 0;
     v_rec         record;
     v_pid         integer;
+    v_error_msg   text;
+    v_error_ctx   text;
 BEGIN
     -- 1. Determinar el límite máximo (Config o Auto)
     SELECT config_value::integer INTO v_max_allowed 
@@ -23,7 +26,7 @@ BEGIN
 
     RAISE NOTICE '[SWARM] Iniciando enjambre. Límite: % workers.', v_max_allowed;
 
-    -- 2. Lanzar el primer escuadrón usando tu lógica de selección aleatoria
+    -- 2. Lanzar el primer escuadrón usando selección aleatoria
     FOR v_rec IN 
         SELECT uuid_child 
         FROM bck.background_process 
@@ -33,18 +36,40 @@ BEGIN
         ORDER BY random() 
         LIMIT v_max_allowed
     LOOP
-        -- Lanzamiento del worker hijo
-        v_pid := pg_background_launch(format('SELECT bck.run_task_random(%L)', v_rec.uuid_child));
-        
-        -- IMPORTANTE: Pequeño respiro antes del detach para estabilidad del Postmaster
-        PERFORM pg_sleep(0.1); 
-        PERFORM pg_background_detach(v_pid);
-        
-        
-        v_launched := v_launched + 1;
+        BEGIN
+            -- Lanzamiento del worker hijo
+            v_pid := pg_background_launch(format('SELECT bck.run_task_random(%L)', v_rec.uuid_child));
+            
+            -- Respiro vital para el Postmaster
+            PERFORM pg_sleep(0.1); 
+            PERFORM pg_background_detach(v_pid);
+ 
+            v_launched := v_launched + 1;
+
+        EXCEPTION WHEN OTHERS THEN
+            GET STACKED DIAGNOSTICS v_error_msg = MESSAGE_TEXT;
+            
+            -- Si falla el lanzamiento de UN hijo, lo marcamos pero el bucle sigue para los demás
+           
+            UPDATE bck.background_process 
+            SET status = 'FALLIDO', 
+                error_msg = 'FALLO AL LANZAR: ' || v_error_msg,
+                date_update = clock_timestamp()
+            WHERE uuid_child = v_rec.uuid_child;
+            
+            RAISE WARNING '[SWARM] No se pudo lanzar el worker %: %', v_rec.uuid_child, v_error_msg;
+        END;
     END LOOP;
 
-    RETURN format('ÉXITO: Enjambre iniciado con %s workers.', v_launched);
+    RETURN format('ÉXITO: Enjambre iniciado con %s workers activos.', v_launched);
+
+EXCEPTION WHEN OTHERS THEN
+    -- Este bloque captura errores catastróficos de la función completa
+    GET STACKED DIAGNOSTICS v_error_msg = MESSAGE_TEXT,
+                          v_error_ctx = PG_EXCEPTION_CONTEXT;
+                          
+    RAISE LOG '[CRITICAL SWARM ERROR] % | Contexto: %', v_error_msg, v_error_ctx;
+    RETURN format('ERROR CATASTRÓFICO: %s', v_error_msg);
 END;
 $func$;
 
@@ -105,6 +130,20 @@ $func$;
 
  Select * from bck.vw_status_progreso ;
 \watch 1
+
+
+select * from bck.fn_crear_inventario(100);
+select * from bck.background_inventory where uuid_parent = '5cf1f8cd-a7ca-4d01-a8d2-edd4eab51021';
+
+-- llenado multiplicando las querys 
+SELECT bck.fn_registrar_proceso(
+    p_uuid_parent       := '5cf1f8cd-a7ca-4d01-a8d2-edd4eab51021', 
+    p_queries           := ARRAY['SELECT pg_sleep(3)'], 
+    p_process_name      := 'TEST_INDIVIDUAL', 
+    p_mode              := 'RANDOM', 
+    p_repeat            := 100
+);
+
 
 
 
