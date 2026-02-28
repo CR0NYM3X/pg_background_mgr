@@ -452,7 +452,7 @@ BEGIN
     SELECT id, uuid_parent, status, query_exec 
       INTO v_process_id, v_parent_uuid, v_status, v_sql_to_run
     FROM bck.background_process
-    WHERE uuid_child = p_child_uuid;
+    WHERE uuid_child = p_child_uuid AND execution_mode = 'PARALLEL';
 
     IF v_process_id IS NULL THEN
         RETURN false;
@@ -610,7 +610,7 @@ DECLARE
 BEGIN
     -- 1. Validación de Capacidad Inicial
     SELECT count(*) INTO v_needed FROM bck.background_process 
-    WHERE uuid_parent = p_uuid_parent AND status = 'REGISTRADO';
+    WHERE uuid_parent = p_uuid_parent AND status = 'REGISTRADO' AND execution_mode = 'PARALLEL';
 
     IF v_needed = 0 THEN 
         RAISE NOTICE '[INFO] No se encontraron procesos con estatus REGISTRADO para el UUID: %', p_uuid_parent;
