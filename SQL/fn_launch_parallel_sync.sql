@@ -183,13 +183,13 @@ SET lock_timeout = 0 ;
 
 
 -- Revocar público
-REVOKE ALL ON FUNCTION bck.fn_launch_parallel_sync(uuid, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION bck.fn_launch_parallel_sync(uuid) FROM PUBLIC;
 
 -- Dar permisos al rol que ejecutará los workers
-GRANT EXECUTE ON FUNCTION bck.fn_launch_parallel_sync(uuid, text) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION bck.fn_launch_parallel_sync(uuid) TO PUBLIC;
 
 -- Seguridad adicional: Forzar search_path para evitar ataques de shadowing
-ALTER FUNCTION bck.fn_launch_parallel_sync(uuid, text) SET search_path TO bck, public, pg_temp;
+ALTER FUNCTION bck.fn_launch_parallel_sync(uuid) SET search_path TO bck, public, pg_temp;
  
 
 
@@ -316,13 +316,13 @@ SET lock_timeout = 0 ;
 
 
 -- Revocar público
-REVOKE ALL ON FUNCTION bck.run_task_parallel(uuid, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION bck.run_task_parallel(uuid) FROM PUBLIC;
 
 -- Dar permisos al rol que ejecutará los workers
-GRANT EXECUTE ON FUNCTION bck.run_task_parallel(uuid, text) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION bck.run_task_parallel(uuid) TO PUBLIC;
 
 -- Seguridad adicional: Forzar search_path para evitar ataques de shadowing
-ALTER FUNCTION bck.run_task_parallel(uuid, text) SET search_path TO bck, public, pg_temp;
+ALTER FUNCTION bck.run_task_parallel(uuid) SET search_path TO bck, public, pg_temp;
  
 
 
