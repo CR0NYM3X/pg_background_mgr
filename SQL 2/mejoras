@@ -1,0 +1,49 @@
+
+
+ 
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+1.- En caso de que no exista el PID en pg_stat_activity y en estatus de la tabla siga igual, entonces se va modificar indicando que fallo y se indicara que el proceso se cerro y no cambio estatus.
+
+
+2.- Monitoreara todos los PID de  proceos que esten activos y obtendra la lista de procesos uuid child pendientes , se realizara una resta (max_process) - (PID activos ) si es 0 no hace nada y reinicia el ciclo, si retorna un valor ese va ser la cantidad de proceos que vas a lanzar rapidamente. 
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+-- Valores por defecto de configuración
+INSERT INTO job_engine.orchestrator_config (config_key, config_value, data_type, description) VALUES
+    ('max_concurrent_workers',    '5',    'integer',  'Máximo de workers corriendo simultáneamente'),
+    ('max_connection_load_pct',   '70',   'numeric',  '% máximo de conexiones activas antes de pausar lanzamiento'),
+    ('min_free_connections',      '10',   'integer',  'Mínimo de conexiones libres requeridas para lanzar worker'),
+    ('orchestrator_interval_ms',  '2000', 'integer',  'Milisegundos entre ciclos del orquestador'),
+    ('worker_batch_size',         '3',    'integer',  'Máximo de jobs a lanzar por ciclo del orquestador'),
+    ('heartbeat_crash_threshold', '30',   'integer',  'Segundos sin heartbeat para considerar orquestador caído'),
+    ('max_orchestrator_instances','1',    'integer',  'Instancias activas permitidas simultáneamente (singleton=1)'),
+    ('allow_parallel_categories', 'true', 'boolean',  'Permitir jobs de la misma categoría en paralelo'),
+    ('cleanup_done_after_days',   '30',   'integer',  'Días para limpiar jobs completados del historial'),
+    ('default_timeout_seconds',   '600',  'integer',  'Timeout por defecto para jobs sin timeout especificado');
+
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+---------- Mejoras -------
+Las querys se enevian en json.
+
+La tabla de conf se agregaran
+- maximo de reintentos default
+- Max_timeout : Maximo tiempo de ejecucion permitido por proceso.
+
+
+logica de funcionamiento, flujo y arquitectura
+
+
+
+1 - Primer funcion : Registra las querys en formato de ARRAY y retorna un id padre, 
+Replazar uuid por id que ejecute una secuencia
+
+
+
+2 - Segunda funcion : 
