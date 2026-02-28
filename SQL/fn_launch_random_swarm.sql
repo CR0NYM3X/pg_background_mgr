@@ -1,8 +1,4 @@
 
-INSERT INTO bck.background_config (config_key, config_value, description)
-VALUES ('max_bck_random', '0', 'Límite de procesos simultáneos para modo RANDOM. 0 = Auto (max_worker_processes - 5).');
-
- 
 CREATE OR REPLACE FUNCTION bck.fn_launch_random_swarm(p_uuid_parent uuid)
 RETURNS text LANGUAGE plpgsql AS $func$
 DECLARE
