@@ -73,7 +73,7 @@ BEGIN
             UPDATE bck.background_process 
             SET failed_attempts = v_fail_count, error_msg = 'Fallo lanzamiento: ' || SQLERRM
             WHERE uuid_child = v_rec.uuid_child;
-            PERFORM pg_sleep(0.5);
+            PERFORM pg_sleep(0.1);
         END;
     END LOOP;
 
@@ -120,7 +120,7 @@ BEGIN
                 RETURN false;
             END IF;
 
-            PERFORM pg_sleep(0.5);
+            PERFORM pg_sleep(0.1);
         END LOOP;
     END IF;
 
@@ -155,7 +155,7 @@ BEGIN
 
             -- Si aún quedan intentos, esperamos un poco y el WHILE hará la siguiente vuelta
             IF v_fail_count < V_max_attempts THEN
-                PERFORM pg_sleep(0.5);
+                PERFORM pg_sleep(0.1);
             ELSE
                 -- Si ya no hay intentos, marcamos FALLIDO definitivo y cerramos inventario
                 UPDATE bck.background_process SET status = 'FALLIDO', end_time = clock_timestamp() WHERE id = v_rec.id;
