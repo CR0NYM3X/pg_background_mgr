@@ -41,7 +41,7 @@ BEGIN
     -- 3. Bucle de Lanzamiento y Validación Física
     WHILE v_fail_count < v_rec.max_attempts LOOP
         BEGIN
-            v_pid := pg_background_launch(format('SELECT bck.run_task(%L)', v_rec.uuid_child));
+            v_pid := pg_background_launch(format('SELECT bck.run_task_sequential(%L)', v_rec.uuid_child));
             
             v_launch_ok := false;
             FOR i IN 1..10 LOOP
@@ -85,7 +85,7 @@ $func$;
 
 
 
-CREATE OR REPLACE FUNCTION bck.run_task(p_child_uuid uuid)
+CREATE OR REPLACE FUNCTION bck.run_task_sequential(p_child_uuid uuid)
 RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER AS $func$
 DECLARE
     V_max_attempts   integer;
