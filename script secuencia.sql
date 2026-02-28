@@ -98,7 +98,7 @@ BEGIN
     SELECT id, uuid_parent, query_exec, status, max_attempts 
     INTO v_rec
     FROM bck.background_process 
-    WHERE uuid_child = p_child_uuid AND execution_mode = 'SEQUENTIAL';
+    WHERE uuid_child = p_child_uuid AND execution_mode = 'SEQUENTIAL' FOR UPDATE SKIP LOCKED;
 
     V_max_attempts := v_rec.max_attempts;
 
