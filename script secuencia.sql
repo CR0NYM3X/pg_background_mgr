@@ -80,7 +80,13 @@ BEGIN
     UPDATE bck.background_process SET status = 'FALLIDO', error_msg = 'CADENA ROTA: Error fisico.' WHERE uuid_child = v_rec.uuid_child;
     RETURN 'ERROR_LAUNCH_FAILED';
 END;
-$func$;
+$func$
+SET client_min_messages = 'notice' 
+SET log_statement  = 'none' 
+SET log_min_messages = 'panic'
+SET statement_timeout = 0		
+SET lock_timeout = 0 ;
+
 
 
 
@@ -167,7 +173,13 @@ BEGIN
     
     RETURN false;
 END;
-$func$;
+$func$
+SET client_min_messages = 'notice' 
+SET log_statement  = 'none' 
+SET log_min_messages = 'panic'
+SET statement_timeout = 0		
+SET lock_timeout = 0 ;
+
 
 
 
