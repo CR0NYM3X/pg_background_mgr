@@ -33,7 +33,7 @@ INSERT INTO job_engine.orchestrator_config (config_key, config_value, data_type,
 
 5.- Siempre el reintento de procesos fallidos se hacen al final van a tener un tiempo de espera para el reintento de ejecucion . 
 
- 
+ 6.- un proceso al finalizar debe validar si su maestro esta activo en caso de que no lo lanzaran esto por seguridad.
 
 Capa 1 → ¿Workers activos < máximo permitido?
 Capa 2 → ¿Conexiones activas < % umbral configurado?
