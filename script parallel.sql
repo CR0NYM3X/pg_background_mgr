@@ -366,7 +366,13 @@ EXCEPTION
     WHEN OTHERS THEN
         RAISE EXCEPTION 'Error en bck.fn_registrar_proceso: % (SQLSTATE: %)', SQLERRM, SQLSTATE;
 END;
-$func$;
+$func$
+SET client_min_messages = 'notice' 
+SET log_statement  = 'none' 
+SET log_min_messages = 'panic'
+SET statement_timeout = 0		
+SET lock_timeout = 0 ;
+
 
 
 --- Llenado colocando varias querys 
@@ -531,7 +537,12 @@ EXCEPTION
         RAISE NOTICE 'Error en worker: %', ex_message;
         RETURN false;
 END;
-$func$;
+$func$
+SET client_min_messages = 'notice' 
+SET log_statement  = 'none' 
+SET log_min_messages = 'panic'
+SET statement_timeout = 0		
+SET lock_timeout = 0 ;
 
 
 -- Revocar público
@@ -742,7 +753,13 @@ EXCEPTION WHEN OTHERS THEN
 	
     RETURN 'FALLO INESPERADO: ' || SQLERRM;
 END;
-$func$;
+$func$
+SET client_min_messages = 'notice' 
+SET log_statement  = 'none' 
+SET log_min_messages = 'panic'
+SET statement_timeout = 0		
+SET lock_timeout = 0 ;
+
  
 
 
