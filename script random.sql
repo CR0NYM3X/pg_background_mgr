@@ -99,7 +99,7 @@ BEGIN
         UPDATE bck.background_process 
         SET status = 'FALLIDO', error_msg = SQLERRM, end_time = clock_timestamp() 
         WHERE id = v_rec.id;
-        PERFORM pg_sleep(0.5); -- Freno de seguridad ante errores constantes
+        PERFORM pg_sleep(0.1); -- Freno de seguridad ante errores constantes
     END;
 
     -- 3. Liberar slot en inventario
