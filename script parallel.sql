@@ -419,7 +419,7 @@ Esta es la funcion que va utilizar cada proceso para ejecutar las instrucciones.
 **/
 	
 
-CREATE OR REPLACE FUNCTION bck.run_task(
+CREATE OR REPLACE FUNCTION bck.run_task_parallel(
     p_child_uuid uuid
 )
 RETURNS boolean
@@ -535,19 +535,19 @@ $func$;
 
 
 -- Revocar público
-REVOKE ALL ON FUNCTION bck.run_task(uuid, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION bck.run_task_parallel(uuid, text) FROM PUBLIC;
 
 -- Dar permisos al rol que ejecutará los workers
-GRANT EXECUTE ON FUNCTION bck.run_task(uuid, text) TO PUBLIC;
+GRANT EXECUTE ON FUNCTION bck.run_task_parallel(uuid, text) TO PUBLIC;
 
 -- Seguridad adicional: Forzar search_path para evitar ataques de shadowing
-ALTER FUNCTION bck.run_task(uuid, text) SET search_path TO bck, public, pg_temp;
+ALTER FUNCTION bck.run_task_parallel(uuid, text) SET search_path TO bck, public, pg_temp;
  
 
  
 ---------------- EXAMPLE USAGE ----------------
 
-SELECT bck.run_task('dab7cbd6-5f2a-492c-9b37-1de4abccd957');
+SELECT bck.run_task_parallel('dab7cbd6-5f2a-492c-9b37-1de4abccd957');
 
 select * from pg_stat_activity where  query ilike '%run_task%';
 select pg_terminate_backend(2407201);
@@ -643,7 +643,7 @@ BEGIN
                 BEGIN
 					
                     -- A. Lanzamiento
-                    v_pid := pg_background_launch(format($_bck_$ SELECT bck.run_task(%L) $_bck_$, v_rec.uuid_child));
+                    v_pid := pg_background_launch(format($_bck_$ SELECT bck.run_task_parallel(%L) $_bck_$, v_rec.uuid_child));
                     
 					PERFORM pg_sleep(0.1);
                     -- B. Validación física
