@@ -1,22 +1,6 @@
 pg_background
 
 /*
-orquestar el paralelismo mediante `pg_background`, permitiendo el control de ciclos de vida de procesos "workers" que se alimentan de una cola de tareas.
-
-Aquí tienes la propuesta arquitectónica y el diseño de la estructura de datos bajo la **plantilla corporativa de Jorge**.
-
----
-
-## 1. Resumen Técnico del Diseño
-
-El sistema se basará en un modelo de **Orquestador-Worker**.
-
-* **Inventario:** Controla el "presupuesto" de procesos disponibles para un lote.
-* **Procesos:** Es la cola de tareas (queries) vinculadas al inventario.
-* **Estado y Reciclaje:** Los procesos pasan por estados controlados para permitir que un worker de `pg_background` tome la siguiente tarea pendiente si el límite de paralelismo real es menor al total de tareas.
-
-### Diagrama de Flujo Lógico
-
 
 \c postgres
 drop database test;
@@ -24,10 +8,8 @@ create database test;
 \c test 
 create extension pg_background;
 
-
 ----------------------- Agregar validacion de PARALLEL
 	and execution_mode = 'PARALLEL';
-
 	
 */
  
