@@ -119,11 +119,10 @@ CREATE INDEX IF NOT EXISTS idx_bck_proc_status ON bck.background_process(status)
  
 
 
-
 CREATE OR REPLACE VIEW bck.vw_status_progreso AS
-WITH cte_actividad_real AS (
-    -- Capturamos los workers de pg_background activos en el motor
-    SELECT pid, state, query, backend_start
+WITH cte_real_global AS (
+    -- Esta es la verdad del motor: ¿Cuántos workers de fondo hay en total?
+    SELECT count(*) as total_activos_motor
     FROM pg_stat_activity 
     WHERE backend_type = 'pg_background'
 ),
@@ -133,45 +132,39 @@ cte_metricas AS (
         count(*) as total_tareas,
         count(*) FILTER (WHERE p.status = 'COMPLETADO') as completados,
         count(*) FILTER (WHERE p.status = 'FALLIDO') as fallidos,
-        -- Contamos procesos que están en nuestra tabla como EJECUTANDO 
-        -- Y que además existen físicamente en pg_stat_activity
-        count(a.pid) FILTER (WHERE p.status = 'EJECUTANDO') as workers_activos_motor,
-        -- Procesos en cola que aún no inician
         count(*) FILTER (WHERE p.status = 'REGISTRADO') as en_espera,
-        -- Procesos asignados a un worker pero esperando señal
-        count(*) FILTER (WHERE p.status = 'LANZADO') as LANZADO
+        count(*) FILTER (WHERE p.status = 'LANZADO') as lanzado_cola,
+        -- Mantenemos el conteo de cuántos de NUESTROS procesos están marcados como EJECUTANDO
+        count(*) FILTER (WHERE p.status = 'EJECUTANDO') as ejecucion_en_tabla
     FROM bck.background_process p
-    LEFT JOIN cte_actividad_real a ON p.pid = a.pid
     GROUP BY p.uuid_parent
 )
 SELECT 
-    uuid_parent,
+    m.uuid_parent,
     CASE 
-        WHEN total_tareas = (completados + fallidos) AND total_tareas > 0 THEN 'FINALIZADO'
-        WHEN workers_activos_motor > 0 THEN 'EJECUTANDO (RUNNING)'
-        WHEN LANZADO > 0 THEN 'LANZADO'
-        WHEN en_espera = total_tareas THEN 'PENDIENTE (POR INICIAR)'
-        ELSE 'EN PROCESO'
+        WHEN m.total_tareas = (m.completados + m.fallidos) AND m.total_tareas > 0 THEN '✅ FINALIZADO'
+        WHEN r.total_activos_motor > 0 THEN '🔥 EJECUTANDO'
+        WHEN m.en_espera = m.total_tareas THEN '⏳ PENDIENTE'
+        ELSE '⚙️ EN PROCESO'
     END as "Estatus Global",
-    total_tareas as "Total",
-    completados as "Hechos",
-    fallidos as "Errores",
-    workers_activos_motor as "Activos Real",
-    en_espera as "En Espera",
+    m.total_tareas as "Total",
+    m.completados as "Hechos",
+    m.fallidos as "Errores",
+    -- AQUÍ ESTÁ TU CAMBIO: Directo del motor, sin filtros de tabla
+    r.total_activos_motor as "Activos Real", 
+    m.en_espera as "En Espera",
     CASE 
-        WHEN total_tareas = 0 THEN '0%'
-        ELSE round((completados::float / total_tareas::float) * 100)::text || '%' 
+        WHEN m.total_tareas = 0 THEN '0%'
+        ELSE round((m.completados::float / m.total_tareas::float) * 100)::text || '%' 
     END as "Avance",
-    -- Barra de progreso visual para PSQL
     '[' || 
     rpad(
-        repeat('█', (COALESCE(round((completados::float / NULLIF(total_tareas,0)::float) * 20),0))::int), 
+        repeat('█', (COALESCE(round((m.completados::float / NULLIF(m.total_tareas,0)::float) * 20),0))::int), 
         20, 
         ' '
     ) || 
     ']' as "Progreso"
-FROM cte_metricas;
-
+FROM cte_metricas m, cte_real_global r; -- Cross join para tener la métrica real en todas las filas
 
 
 -- Select * from bck.vw_status_progreso ;
