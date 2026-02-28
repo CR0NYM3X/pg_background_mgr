@@ -158,6 +158,19 @@ END;
 $func$;
 
 
+
+
+-- Revocar público
+REVOKE ALL ON FUNCTION bck.fn_crear_inventario(integer) FROM PUBLIC;
+
+-- Dar permisos al rol que ejecutará los workers
+GRANT EXECUTE ON FUNCTION bck.fn_crear_inventario(integer) TO PUBLIC;
+
+-- Seguridad adicional: Forzar search_path para evitar ataques de shadowing
+ALTER FUNCTION bck.fn_crear_inventario(integer) SET search_path TO bck, public, pg_temp;
+ 
+
+
 -- select * from bck.fn_crear_inventario(10);
  
 
@@ -289,6 +302,20 @@ SET log_statement  = 'none'
 SET log_min_messages = 'panic'
 SET statement_timeout = 0		
 SET lock_timeout = 0 ;
+
+
+
+
+-- Revocar público
+REVOKE ALL ON FUNCTION bck.fn_registrar_proceso(uuid,text[],text,text,integer) FROM PUBLIC;
+
+-- Dar permisos al rol que ejecutará los workers
+GRANT EXECUTE ON FUNCTION bck.fn_registrar_proceso(uuid,text[],text,text,integer) TO PUBLIC;
+
+-- Seguridad adicional: Forzar search_path para evitar ataques de shadowing
+ALTER FUNCTION bck.fn_registrar_proceso(uuid,text[],text,text,integer) SET search_path TO bck, public, pg_temp;
+ 
+
 
 
 /***
