@@ -1,14 +1,7 @@
 
 
  
-
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-1.- En caso de que no exista el PID en pg_stat_activity y en estatus de la tabla siga igual, entonces se va modificar indicando que fallo y se indicara que el proceso se cerro y no cambio estatus.
-
-
-2.- Monitoreara todos los PID de  proceos que esten activos y obtendra la lista de procesos uuid child pendientes , se realizara una resta (max_process) - (PID activos ) si es 0 no hace nada y reinicia el ciclo, si retorna un valor ese va ser la cantidad de proceos que vas a lanzar rapidamente. 
-
+ 
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
@@ -30,20 +23,30 @@ INSERT INTO job_engine.orchestrator_config (config_key, config_value, data_type,
 
 
 ---------- Mejoras -------
-Las querys se enevian en json.
+1- Las querys se enevian en json.
 
-La tabla de conf se agregaran
+3- La tabla de conf se agregaran
 - maximo de reintentos default
 - Max_timeout : Maximo tiempo de ejecucion permitido por proceso.
 
+4- remplazar los uuid padre y hijo  por id.
 
-logica de funcionamiento, flujo y arquitectura
+5.- Siempre el reintento de procesos fallidos se hacen al final van a tener un tiempo de espera para el reintento de ejecucion . 
+
+ 
+
+Capa 1 → ¿Workers activos < máximo permitido?
+Capa 2 → ¿Conexiones activas < % umbral configurado?
+Capa 3 → ¿Hay suficientes conexiones libres disponibles?
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-
-1 - Primer funcion : Registra las querys en formato de ARRAY y retorna un id padre, 
-Replazar uuid por id que ejecute una secuencia
+1 - Primer funcion : Registra las querys en formato de ARRAY y retorna un id padre
 
 
+2 - Segunda funcion : su unico trabajo va ser lanzar al proceso de segundo plano que es el orquestador , este se encargara de lanzar procesos , validara sus variables 
+Monitoreara todos los PID de  proceos que esten activos y obtendra la lista de procesos uuid child pendientes , se realizara una resta (max_process) - (PID activos ) si es 0 no hace nada y reinicia el ciclo, si retorna un valor ese va ser la cantidad de proceos que vas a lanzar rapidamente. 
 
-2 - Segunda funcion : 
+7.- En caso de que no exista el PID en pg_stat_activity y en estatus de la tabla siga igual, entonces se va modificar indicando que fallo y se indicara que el proceso se cerro y no cambio estatus.
+
