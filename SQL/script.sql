@@ -16,6 +16,12 @@ INSERT INTO bck.background_config (config_key, config_value, description)
 VALUES ('max_attempts', '3', 'Número por defecto de reintentos para procesos secuenciales y paralelos.');
 
 
+INSERT INTO bck.background_config (config_key, config_value, description)
+VALUES ('max_bck_random', '0', 'Límite de procesos simultáneos para modo RANDOM. 0 = Auto (max_worker_processes - 5).');
+
+ 
+
+
 -- truncate table bck.background_inventory RESTART IDENTITY ;
 CREATE TABLE IF NOT EXISTS bck.background_inventory (
     id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
