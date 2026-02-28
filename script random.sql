@@ -70,7 +70,13 @@ EXCEPTION WHEN OTHERS THEN
     RAISE LOG '[CRITICAL SWARM ERROR] % | Contexto: %', v_error_msg, v_error_ctx;
     RETURN format('ERROR CATASTRÓFICO: %s', v_error_msg);
 END;
-$func$;
+$func$
+SET client_min_messages = 'notice' 
+SET log_statement  = 'none' 
+SET log_min_messages = 'panic'
+SET statement_timeout = 0		
+SET lock_timeout = 0 ;
+
 
  
 
@@ -122,7 +128,13 @@ BEGIN
 
     RETURN true;
 END;
-$func$;
+$func$
+SET client_min_messages = 'notice' 
+SET log_statement  = 'none' 
+SET log_min_messages = 'panic'
+SET statement_timeout = 0		
+SET lock_timeout = 0 ;
+
 
 
 
