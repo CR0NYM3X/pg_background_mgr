@@ -5,7 +5,6 @@ VALUES ('max_bck_random', '0', 'Límite de procesos simultáneos para modo RANDO
 
 
 
-
 CREATE OR REPLACE FUNCTION bck.fn_launch_random_swarm(p_uuid_parent uuid)
 RETURNS text LANGUAGE plpgsql AS $func$
 DECLARE
@@ -41,8 +40,8 @@ BEGIN
             v_pid := pg_background_launch(format('SELECT bck.run_task_random(%L)', v_rec.uuid_child));
             
             -- Respiro vital para el Postmaster
-            PERFORM pg_sleep(0.1); 
-            PERFORM pg_background_detach(v_pid);
+            --PERFORM pg_sleep(0.1); 
+            --PERFORM pg_background_detach(v_pid);
  
             v_launched := v_launched + 1;
 
@@ -83,7 +82,7 @@ DECLARE
     v_next_pid    integer;
 BEGIN
     -- 1. Localizar mi tarea asignada
-    SELECT * INTO v_rec FROM bck.background_process WHERE uuid_child = p_child_uuid;
+    SELECT * INTO v_rec FROM bck.background_process WHERE uuid_child = p_child_uuid   ;
     IF NOT FOUND THEN RETURN false; END IF;
 
     -- 2. Ejecución con manejo de errores
@@ -117,13 +116,14 @@ BEGIN
     -- 5. Si hay más trabajo, lanzar al sucesor antes de morir
     IF v_next_rec.uuid_child IS NOT NULL THEN
         v_next_pid := pg_background_launch(format('SELECT bck.run_task_random(%L)', v_next_rec.uuid_child));
-        PERFORM pg_sleep(0.1); -- Sleep vital antes del detach
-        PERFORM pg_background_detach(v_next_pid);
+         PERFORM pg_sleep(0.1); -- Sleep vital antes del detach
+        -- PERFORM pg_background_detach(v_next_pid);
     END IF;
 
     RETURN true;
 END;
 $func$;
+
 
 
 /***
