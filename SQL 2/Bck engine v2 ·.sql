@@ -59,6 +59,66 @@ COMMENT ON COLUMN bck.config.value       IS 'Parameter value (always stored as t
 COMMENT ON COLUMN bck.config.data_type   IS 'Expected type for safe casting: integer, numeric, boolean, text';
 COMMENT ON COLUMN bck.config.description IS 'Human-readable explanation of what this parameter controls';
 
+
+
+CREATE OR REPLACE FUNCTION bck.fn_trg_config_safety_check()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_sys_max_workers INT;
+    v_new_val_int     INT;
+    v_safe_limit      INT;
+BEGIN
+    -- Only apply logic if the key being inserted/updated is 'max_workers'
+    IF NEW.key = 'max_workers' THEN
+        
+        -- 1. Fetch system-level limit from GUC (Grand Unified Configuration)
+        v_sys_max_workers := current_setting('max_worker_processes')::INT;
+        v_safe_limit      := v_sys_max_workers - 5;
+        
+        -- 2. Validate that the value is a proper integer
+        BEGIN
+            v_new_val_int := NEW.value::INT;
+        EXCEPTION WHEN others THEN
+            RAISE EXCEPTION 'Configuration error: "max_workers" value must be a valid integer.';
+        END;
+
+        -- 3. Safety boundary validation
+        IF v_new_val_int > v_safe_limit THEN
+            RAISE EXCEPTION 
+                E'\n--- ORCHESTRATOR SAFETY ALERT ---\n'
+                'CAUSE: Requested max_workers (%) exceeds the safety threshold.\n'
+                'SERVER CONFIGURATION: max_worker_processes = %\n'
+                'ALLOWED LIMIT: % (System limit minus 5 for critical background tasks).\n'
+                'RECOMMENDATION: Increase "max_worker_processes" in postgresql.conf and restart the service '
+                'or decrease the value in this bck.config table.',
+                v_new_val_int, v_sys_max_workers, v_safe_limit;
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- ---------------------------------------------------------------------------
+-- TRIGGER: trg_bck_config_max_workers_safety
+-- Ensures that the orchestrator never claims all available worker slots,
+-- leaving room for autovacuum, replication, and parallel queries.
+-- ---------------------------------------------------------------------------
+CREATE TRIGGER trg_bck_config_max_workers_safety
+    BEFORE INSERT OR UPDATE ON bck.config
+    FOR EACH ROW
+    EXECUTE FUNCTION bck.fn_trg_config_safety_check();
+
+
+
+
+
+
+
+
+
+
 -- Default configuration values
 INSERT INTO bck.config (key, value, data_type, description) VALUES
     ('max_workers',           '5',    'integer', 'Maximum number of concurrent background workers allowed'),
