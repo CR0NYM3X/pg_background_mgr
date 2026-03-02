@@ -1,0 +1,26 @@
+1.- agregarle que borre el tunnel que hace para retornar los resultados usando la funcion   pg_background_detach(v_next_pid), para que sea rapido lo que va hacer es ejecutrar los proceos primero y al final hacer el detach
+Al usar pg_background_detach, destruyes el túnel de comunicación (DSM) entre el proceso padre y el hijo. Esto evita el error "error too many dynamic shared memory segments."  de saturación por max_dynamic_shared_memory_segments,  liberando RAM de inmediato y permitiendo una ejecución asíncrona masiva sin bloqueos de memoria
+
+
+
+
+
+2.- a la tabla bck.process agregarle la columna  failed_attempts , 
+
+3.- en el archiov "02 - helpers.sql" la funcion bck.fn_orch_is_alive() hay que corregirla,
+ya que la forma de validar que el orquestador esta vivo es validando su en pg_stat_Activy, para esto se debe de recibir un pid , tal vez no se ocupé porque ya existe la funcion validate_pids
+
+
+
+
+4.- 
+
+------------- Codigo checado ---------
+
+* V2 01 ddl .sql
+* V2 02 helpers.sql
+V2 03 fn register batch .sql
+V2 04 fn worker.sql
+V2 05 fn orchestrator.sql
+V2 06 admin and views.sql
+V2 07 usage guide.sql
