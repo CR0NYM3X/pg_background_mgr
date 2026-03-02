@@ -153,6 +153,11 @@ COMMENT ON FUNCTION bck.fn_resolve_params IS
      Query-level params always win over config table values.
      Used at registration time to snapshot effective params for each process.';
 
+
+-- select * from bck.fn_resolve_params();
+-- {"max_workers": "45", "retry_delay_sec": "60", "cycle_interval_ms": "2000", "max_orch_instances": "1", "default_timeout_sec": "600", "heartbeat_crash_sec": "30", "max_failed_attempts": "3"} 
+
+
 -- ---------------------------------------------------------------------------
 -- HELPER: fn_fix_stuck
 -- Detects and resolves processes that are stuck in RUNNING state but
@@ -171,6 +176,9 @@ DECLARE
     v_max    SMALLINT;
 BEGIN
     v_max := bck.fn_cfg('max_failed_attempts', '3')::SMALLINT;
+
+	-- UPDATE STATS
+    PERFORM pg_stat_clear_snapshot();	
 
     -- Find processes marked RUNNING whose PID is gone from pg_stat_activity
     FOR v_rec IN
@@ -227,6 +235,9 @@ $$;
 COMMENT ON FUNCTION bck.fn_fix_stuck IS
     'Safety net: finds RUNNING processes whose pg_background PID is gone and resets them
      to RETRYING (if attempts remain) or FAILED (if exhausted). Called each orchestrator cycle.';
+
+
+
 
 -- ---------------------------------------------------------------------------
 -- HELPER: fn_orch_is_alive
